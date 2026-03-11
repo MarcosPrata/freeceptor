@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 
 type ApiRequestLog = {
   id: number;
@@ -28,6 +28,11 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<number[]>([]);
   const [activeTab, setActiveTab] = useState<"requests" | "routes">("requests");
+  const [configRouteId, setConfigRouteId] = useState<string | null>(null);
+  const [configStatus, setConfigStatus] = useState<string>("200");
+  const [configBody, setConfigBody] = useState<string>("{}");
+  const [configHeaders, setConfigHeaders] = useState<string>("{}");
+  const [configMessage, setConfigMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +79,7 @@ export default function Home() {
         <header className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">
-              Monitor de requisições da API
+              Freeceptor
             </h1>
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
               Toda chamada a <code>/api/*</code> aparece aqui em tempo quase
@@ -269,46 +274,176 @@ export default function Home() {
                     <th className="border-b border-zinc-200 px-3 py-2 text-left dark:border-zinc-800">
                       Última chamada
                     </th>
+                    <th className="border-b border-zinc-200 px-3 py-2 text-right dark:border-zinc-800">
+                      Configurar
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {routes.map((route) => (
-                    <tr
-                      key={route.id}
-                      className="border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900/60"
-                    >
-                      <td className="px-3 py-2 align-top">
-                        <span
-                          className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold"
-                          style={{
-                            backgroundColor:
-                              route.method === "GET"
-                                ? "rgba(59,130,246,0.1)"
-                                : route.method === "POST"
-                                  ? "rgba(16,185,129,0.1)"
-                                  : "rgba(148,163,184,0.1)",
-                            color:
-                              route.method === "GET"
-                                ? "#1d4ed8"
-                                : route.method === "POST"
-                                  ? "#047857"
-                                  : "#334155",
-                          }}
-                        >
-                          {route.method}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 align-top font-mono text-[11px]">
-                        {route.path.replace(/^\/api/, "").split("/").filter(Boolean).join(" / ") ||
-                          "-"}
-                      </td>
-                      <td className="px-3 py-2 align-top text-xs">
-                        {route.count}
-                      </td>
-                      <td className="px-3 py-2 align-top font-mono text-[11px]">
-                        {new Date(route.lastTimestamp).toLocaleTimeString()}
-                      </td>
-                    </tr>
+                    <React.Fragment key={route.id}>
+                      <tr
+                        className="border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900/60"
+                      >
+                        <td className="px-3 py-2 align-top">
+                          <span
+                            className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                            style={{
+                              backgroundColor:
+                                route.method === "GET"
+                                  ? "rgba(59,130,246,0.1)"
+                                  : route.method === "POST"
+                                    ? "rgba(16,185,129,0.1)"
+                                    : "rgba(148,163,184,0.1)",
+                              color:
+                                route.method === "GET"
+                                  ? "#1d4ed8"
+                                  : route.method === "POST"
+                                    ? "#047857"
+                                    : "#334155",
+                            }}
+                          >
+                            {route.method}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 align-top font-mono text-[11px]">
+                          {route.path
+                            .replace(/^\/api/, "")
+                            .split("/")
+                            .filter(Boolean)
+                            .join(" / ") || "-"}
+                        </td>
+                        <td className="px-3 py-2 align-top text-xs">
+                          {route.count}
+                        </td>
+                        <td className="px-3 py-2 align-top font-mono text-[11px]">
+                          {new Date(route.lastTimestamp).toLocaleTimeString()}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right">
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 rounded border border-zinc-300 px-2 py-1 text-[10px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                            onClick={() => {
+                              const isSame = configRouteId === route.id;
+                              setConfigRouteId(isSame ? null : route.id);
+                              setConfigMessage(null);
+                              if (!isSame) {
+                                setConfigStatus("200");
+                                setConfigBody("{}");
+                                setConfigHeaders("{}");
+                              }
+                            }}
+                          >
+                            Configurar
+                          </button>
+                        </td>
+                      </tr>
+                      {configRouteId === route.id && (
+                        <tr>
+                          <td
+                            colSpan={5}
+                            className="border-b border-zinc-100 bg-zinc-50 px-3 py-3 text-[11px] text-zinc-700 dark:border-zinc-900 dark:bg-zinc-900 dark:text-zinc-200"
+                          >
+                            <form
+                              className="flex flex-col gap-2"
+                              onSubmit={async (e) => {
+                                e.preventDefault();
+                                setConfigMessage(null);
+                                try {
+                                  const statusNumber = Number(configStatus) || 200;
+                                  const parsedBody = configBody
+                                    ? JSON.parse(configBody)
+                                    : null;
+                                  const parsedHeaders = configHeaders
+                                    ? JSON.parse(configHeaders)
+                                    : {};
+
+                                  const res = await fetch("/api/routes", {
+                                    method: "POST",
+                                    headers: {
+                                      "Content-Type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                      method: route.method,
+                                      path: route.path,
+                                      status: statusNumber,
+                                      headers: parsedHeaders,
+                                      responseBody: parsedBody,
+                                    }),
+                                  });
+
+                                  if (!res.ok) {
+                                    const text = await res.text();
+                                    throw new Error(text);
+                                  }
+
+                                  setConfigMessage(
+                                    "Configuração salva. As próximas chamadas dessa rota usarão essa resposta.",
+                                  );
+                                } catch (err) {
+                                  setConfigMessage(
+                                    err instanceof Error
+                                      ? `Erro ao salvar configuração: ${err.message}`
+                                      : "Erro ao salvar configuração",
+                                  );
+                                }
+                              }}
+                            >
+                              <div className="flex flex-wrap gap-2">
+                                <label className="flex items-center gap-1 text-[11px]">
+                                  <span className="text-zinc-500">Status</span>
+                                  <input
+                                    type="number"
+                                    min={100}
+                                    max={599}
+                                    className="h-6 w-16 rounded border border-zinc-300 bg-white px-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                    value={configStatus}
+                                    onChange={(e) => setConfigStatus(e.target.value)}
+                                  />
+                                </label>
+                              </div>
+                              <div className="grid gap-2 md:grid-cols-2">
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-[11px] text-zinc-500">
+                                    Body (JSON)
+                                  </span>
+                                  <textarea
+                                    rows={4}
+                                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                    value={configBody}
+                                    onChange={(e) => setConfigBody(e.target.value)}
+                                  />
+                                </label>
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-[11px] text-zinc-500">
+                                    Cabeçalhos (JSON)
+                                  </span>
+                                  <textarea
+                                    rows={4}
+                                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                    value={configHeaders}
+                                    onChange={(e) => setConfigHeaders(e.target.value)}
+                                  />
+                                </label>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="submit"
+                                  className="inline-flex items-center rounded bg-zinc-900 px-3 py-1 text-[11px] font-medium text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                                >
+                                  Salvar configuração
+                                </button>
+                                {configMessage && (
+                                  <span className="text-[11px] text-zinc-500">
+                                    {configMessage}
+                                  </span>
+                                )}
+                              </div>
+                            </form>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   ))}
                   {!loading && routes.length === 0 && (
                     <tr>

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { addRequestLog } from "@/lib/server/request-log";
+import { addRequestLog, getRouteConfigFor } from "@/lib/server/request-log";
 
 type RouteContext = {
   params: Promise<{ slug?: string[] }>;
@@ -44,8 +44,8 @@ export async function CONNECT(request: Request, context: RouteContext) {
 async function readRequest(request: Request, context: RouteContext) {
   const { slug } = await context.params;
   const url = new URL(request.url);
-  const path = url.pathname;
   const method = request.method;
+  const pathFromSlug = slug && slug.length ? `/${slug.join("/")}` : "/";
   let body: unknown = null;
   try {
     body = await request.json();
@@ -56,14 +56,22 @@ async function readRequest(request: Request, context: RouteContext) {
 
   addRequestLog({
     method,
-    path,
+    path: pathFromSlug,
     slug: slug ?? [],
     body,
     headers,
   });
 
+  const configured = getRouteConfigFor(method, pathFromSlug);
+  if (configured) {
+    return NextResponse.json(configured.body ?? null, {
+      status: configured.status,
+      headers: configured.headers,
+    });
+  }
+
   return NextResponse.json({
-    path,
+    path: pathFromSlug,
     slug: slug ?? [],
     method,
     body,

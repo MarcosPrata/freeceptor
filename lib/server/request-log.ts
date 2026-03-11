@@ -71,3 +71,43 @@ export function getRouteStats(): ApiRouteStat[] {
   );
 }
 
+export type ApiRouteConfig = {
+  method: string;
+  path: string;
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+};
+
+const routeConfigs = new Map<string, ApiRouteConfig>();
+
+function configKey(method: string, path: string): string {
+  return `${method.toUpperCase()} ${path}`;
+}
+
+export function setRouteConfig(config: ApiRouteConfig): ApiRouteConfig {
+  const key = configKey(config.method, config.path);
+  const normalized: ApiRouteConfig = {
+    ...config,
+    method: config.method.toUpperCase(),
+    path: config.path || "/",
+    status: config.status || 200,
+    headers: config.headers ?? {},
+  };
+  routeConfigs.set(key, normalized);
+  return normalized;
+}
+
+export function getRouteConfigFor(
+  method: string,
+  path: string,
+): ApiRouteConfig | undefined {
+  const key = configKey(method, path);
+  return routeConfigs.get(key);
+}
+
+export function getAllRouteConfigs(): ApiRouteConfig[] {
+  return Array.from(routeConfigs.values());
+}
+
+
