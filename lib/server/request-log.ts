@@ -33,3 +33,41 @@ export function getRequestLogs(): ApiRequestLog[] {
   return logs;
 }
 
+export type ApiRouteStat = {
+  id: string;
+  method: string;
+  path: string;
+  count: number;
+  firstTimestamp: string;
+  lastTimestamp: string;
+};
+
+export function getRouteStats(): ApiRouteStat[] {
+  const map = new Map<string, ApiRouteStat>();
+
+  for (const log of logs) {
+    const pathFromSlug = log.slug.length ? `/${log.slug.join("/")}` : "/";
+    const key = `${log.method} ${pathFromSlug}`;
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, {
+        id: key,
+        method: log.method,
+        path: pathFromSlug,
+        count: 1,
+        firstTimestamp: log.timestamp,
+        lastTimestamp: log.timestamp,
+      });
+    } else {
+      existing.count += 1;
+      existing.lastTimestamp = log.timestamp;
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) =>
+    a.path === b.path
+      ? a.method.localeCompare(b.method)
+      : a.path.localeCompare(b.path),
+  );
+}
+
