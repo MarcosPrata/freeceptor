@@ -37,7 +37,8 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
 
-    async function load() {
+    // primeiro snapshot via HTTP, para fallback rápido
+    async function initialLoad() {
       try {
         const [logsRes, routesRes] = await Promise.all([
           fetch("/api/logs"),
@@ -53,23 +54,45 @@ export default function Home() {
           setLogs(logsData);
           setRoutes(routesData);
           setError(null);
+          setLoading(false);
         }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
-        }
-      } finally {
-        if (!cancelled) {
           setLoading(false);
         }
       }
     }
 
-    load();
-    const interval = setInterval(load, 2000);
+    initialLoad();
+
+    const es = new EventSource("/api/events");
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          logs: ApiRequestLog[];
+          routes: ApiRouteStat[];
+        };
+        if (!cancelled) {
+          setLogs(data.logs);
+          setRoutes(data.routes);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    };
+    es.onerror = () => {
+      if (!cancelled) {
+        setError("Conexão com /api/events perdida. Tentando reconectar...");
+      }
+    };
+
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      es.close();
     };
   }, []);
 
@@ -134,7 +157,7 @@ export default function Home() {
               </span>
             )}
             <span className="font-mono text-[11px] text-zinc-500">
-              atualiza a cada 2s
+              atualiza em tempo real (SSE)
             </span>
           </div>
 

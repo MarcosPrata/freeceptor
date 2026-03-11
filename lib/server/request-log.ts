@@ -16,6 +16,13 @@ export type ApiRequestLog = {
 let counter = 1;
 const logs: ApiRequestLog[] = [];
 
+type ChangeListener = (payload: {
+  logs: ApiRequestLog[];
+  routes: ApiRouteStat[];
+}) => void;
+
+const listeners = new Set<ChangeListener>();
+
 export function addRequestLog(entry: Omit<ApiRequestLog, "id" | "timestamp">) {
   const log: ApiRequestLog = {
     id: counter++,
@@ -27,6 +34,7 @@ export function addRequestLog(entry: Omit<ApiRequestLog, "id" | "timestamp">) {
   if (logs.length > 200) {
     logs.length = 200;
   }
+  notifyChange();
 }
 
 export function getRequestLogs(): ApiRequestLog[] {
@@ -95,6 +103,7 @@ export function setRouteConfig(config: ApiRouteConfig): ApiRouteConfig {
     headers: config.headers ?? {},
   };
   routeConfigs.set(key, normalized);
+  notifyChange();
   return normalized;
 }
 
@@ -108,6 +117,32 @@ export function getRouteConfigFor(
 
 export function getAllRouteConfigs(): ApiRouteConfig[] {
   return Array.from(routeConfigs.values());
+}
+
+export function getSnapshot() {
+  return {
+    logs: getRequestLogs(),
+    routes: getRouteStats(),
+  };
+}
+
+export function subscribeToChanges(listener: ChangeListener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function notifyChange() {
+  if (listeners.size === 0) return;
+  const snapshot = getSnapshot();
+  for (const listener of listeners) {
+    try {
+      listener(snapshot);
+    } catch {
+      // ignore listener errors
+    }
+  }
 }
 
 
