@@ -105,8 +105,7 @@ export default function Home() {
               Freeceptor
             </h1>
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              Toda chamada a <code>/api/*</code> aparece aqui em tempo quase
-              real.
+              Toda chamada a <code>/api/*</code> aparece aqui em tempo real.
             </p>
           </div>
           <div className="inline-flex rounded-full border border-zinc-300 bg-zinc-100 p-1 text-xs font-medium dark:border-zinc-700 dark:bg-zinc-900">
