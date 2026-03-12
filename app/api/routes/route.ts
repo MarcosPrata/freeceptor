@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server";
-import { getRouteStats, setRouteConfig } from "@/lib/server/request-log";
+import {
+  getRouteStatsWithConfigs,
+  getAllRouteConfigs,
+  setRouteConfig,
+} from "@/lib/server/request-log";
 
 export async function GET() {
-  const routes = getRouteStats();
+  const routes = getRouteStatsWithConfigs();
   return NextResponse.json(routes);
+}
+
+export async function GETConfigs() {
+  const configs = getAllRouteConfigs();
+  return NextResponse.json(configs);
 }
 
 export async function POST(request: Request) {
@@ -33,5 +42,4 @@ export async function POST(request: Request) {
 
   return NextResponse.json(config);
 }
-
 

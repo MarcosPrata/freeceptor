@@ -96,6 +96,37 @@ export function getRouteStats(): ApiRouteStat[] {
   );
 }
 
+export function getRouteStatsWithConfigs(): ApiRouteStat[] {
+  const baseStats = getRouteStats();
+  const map = new Map<string, ApiRouteStat>();
+
+  for (const stat of baseStats) {
+    const key = `${stat.method} ${stat.path}`;
+    map.set(key, stat);
+  }
+
+  // garante que toda rota configurada apareça, mesmo sem chamadas
+  for (const cfg of getAllRouteConfigs()) {
+    const key = configKey(cfg.method, cfg.path);
+    if (!map.has(key)) {
+      map.set(key, {
+        id: key,
+        method: cfg.method.toUpperCase(),
+        path: normalizePath(cfg.path),
+        count: 0,
+        firstTimestamp: "",
+        lastTimestamp: "",
+      });
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) =>
+    a.path === b.path
+      ? a.method.localeCompare(b.method)
+      : a.path.localeCompare(b.path),
+  );
+}
+
 export type ApiRouteConfig = {
   method: string;
   path: string;
@@ -140,7 +171,7 @@ export function getAllRouteConfigs(): ApiRouteConfig[] {
 export function getSnapshot() {
   return {
     logs: getRequestLogs(),
-    routes: getRouteStats(),
+    routes: getRouteStatsWithConfigs(),
   };
 }
 

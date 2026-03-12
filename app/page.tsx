@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
 
 type ApiRequestLog = {
   id: number;
@@ -24,6 +25,24 @@ type ApiRouteStat = {
   lastTimestamp: string;
 };
 
+type ApiRouteConfig = {
+  method: string;
+  path: string;
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+};
+
+function normalizePathFront(path: string): string {
+  if (!path) return "/";
+  let result = path.trim();
+  if (!result.startsWith("/")) result = `/${result}`;
+  if (result.length > 1 && result.endsWith("/")) {
+    result = result.slice(0, -1);
+  }
+  return result;
+}
+
 export default function Home() {
   const [logs, setLogs] = useState<ApiRequestLog[]>([]);
   const [routes, setRoutes] = useState<ApiRouteStat[]>([]);
@@ -36,11 +55,58 @@ export default function Home() {
   const [configBody, setConfigBody] = useState<string>("{}");
   const [configHeaders, setConfigHeaders] = useState<string>("{}");
   const [configMessage, setConfigMessage] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   function toggleLogExpanded(id: number) {
     setExpandedIds((prev) =>
       prev.includes(id) ? prev.filter((logId) => logId !== id) : [...prev, id],
     );
+  }
+
+  async function openRouteConfig(route: ApiRouteStat) {
+    const isSame = configRouteId === route.id;
+    if (isSame) {
+      setConfigRouteId(null);
+      setConfigMessage(null);
+      return;
+    }
+
+    // valores padrão
+    setConfigRouteId(route.id);
+    setConfigMessage(null);
+    setConfigStatus("200");
+    setConfigBody("{}");
+    setConfigHeaders("{}");
+
+    try {
+      const res = await fetch("/api/routes/configs");
+      if (!res.ok) throw new Error(await res.text());
+      const configs = (await res.json()) as ApiRouteConfig[];
+      const match = configs.find(
+        (cfg) =>
+          cfg.method.toUpperCase() === route.method.toUpperCase() &&
+          normalizePathFront(cfg.path) === normalizePathFront(route.path),
+      );
+      if (match) {
+        setConfigStatus(String(match.status ?? 200));
+        setConfigBody(
+          match.body !== undefined && match.body !== null
+            ? JSON.stringify(match.body, null, 2)
+            : "{}",
+        );
+        setConfigHeaders(
+          match.headers && Object.keys(match.headers).length
+            ? JSON.stringify(match.headers, null, 2)
+            : "{}",
+        );
+      }
+    } catch (err) {
+      console.error("Erro ao carregar config da rota:", err);
+      // mantém os valores padrão, mas não quebra a UI
+    }
   }
 
   useEffect(() => {
@@ -117,7 +183,77 @@ export default function Home() {
               Toda chamada a <code>/api/*</code> aparece aqui em tempo real.
             </p>
           </div>
-          <div className="inline-flex rounded-full border border-zinc-300 bg-zinc-100 p-1 text-xs font-medium dark:border-zinc-700 dark:bg-zinc-900">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <div className="group relative">
+                <button
+                  type="button"
+                  aria-label="Exportar configurações de rotas"
+                  className={cn(
+                    "flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-[13px] text-zinc-700 shadow-sm transition-all duration-150 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800",
+                    activeTab === "routes"
+                      ? "scale-100 opacity-100 translate-y-0"
+                      : "pointer-events-none scale-75 opacity-0 -translate-y-1",
+                  )}
+                  onClick={async () => {
+                    try {
+                      const res = await fetch("/api/routes/configs");
+                      if (!res.ok) throw new Error(await res.text());
+                      const configs = (await res.json()) as ApiRouteConfig[];
+                      const blob = new Blob([JSON.stringify(configs, null, 2)], {
+                        type: "application/json",
+                      });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      const timestamp = new Date()
+                        .toISOString()
+                        .replace(/[:.]/g, "-");
+                      a.download = `freeceptor-route-configs-${timestamp}.json`;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    } catch (err) {
+                      console.error("Erro ao exportar configs:", err);
+                      setError(
+                        err instanceof Error
+                          ? `Erro ao exportar configs: ${err.message}`
+                          : "Erro ao exportar configs",
+                      );
+                    }
+                  }}
+                >
+                  ↓
+                </button>
+                <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
+                  Exportar
+                </span>
+              </div>
+              <div className="group relative">
+                <button
+                  type="button"
+                  aria-label="Importar configurações de rotas"
+                  className={cn(
+                    "flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-[13px] text-zinc-700 shadow-sm transition-all duration-150 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800",
+                    activeTab === "routes"
+                      ? "scale-100 opacity-100 translate-y-0"
+                      : "pointer-events-none scale-75 opacity-0 -translate-y-1",
+                  )}
+                  onClick={() => {
+                    setImportError(null);
+                    setImportText("");
+                    setImportOpen(true);
+                  }}
+                >
+                  ↑
+                </button>
+                <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
+                  Importar
+                </span>
+              </div>
+            </div>
+            <div className="inline-flex rounded-full border border-zinc-300 bg-zinc-100 p-1 text-xs font-medium dark:border-zinc-700 dark:bg-zinc-900">
             <button
               type="button"
               onClick={() => setActiveTab("requests")}
@@ -140,6 +276,7 @@ export default function Home() {
             >
               Rotas
             </button>
+            </div>
           </div>
         </header>
 
@@ -406,14 +543,7 @@ export default function Home() {
                             type="button"
                             className="inline-flex items-center gap-1 rounded border border-zinc-300 px-2 py-1 text-[10px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
                             onClick={() => {
-                              const isSame = configRouteId === route.id;
-                              setConfigRouteId(isSame ? null : route.id);
-                              setConfigMessage(null);
-                              if (!isSame) {
-                                setConfigStatus("200");
-                                setConfigBody("{}");
-                                setConfigHeaders("{}");
-                              }
+                              void openRouteConfig(route);
                             }}
                           >
                             Configurar
@@ -547,6 +677,140 @@ export default function Home() {
           </div>
         </section>
       </main>
+      {importOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-xl rounded-lg bg-white p-4 shadow-lg dark:bg-zinc-950">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  Importar configurações de rotas
+                </h2>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                  Cole o JSON exportado ou arraste um arquivo
+                  <code className="mx-1 rounded bg-zinc-100 px-1 py-[1px] font-mono text-[10px] dark:bg-zinc-900">
+                    .json
+                  </code>
+                  .
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-full p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-900"
+                onClick={() => {
+                  if (!importing) {
+                    setImportOpen(false);
+                  }
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div
+              className="mb-3 flex h-64 cursor-pointer flex-col overflow-auto rounded-md border border-dashed border-zinc-300 bg-zinc-50 px-3 py-2 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              onDragOver={(e) => {
+                e.preventDefault();
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (e.dataTransfer.files?.[0]) {
+                  const file = e.dataTransfer.files[0];
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const raw = typeof reader.result === "string" ? reader.result : "";
+                    // tenta formatar o JSON para ficar mais legível no textarea
+                    try {
+                      const parsed = JSON.parse(raw);
+                      setImportText(JSON.stringify(parsed, null, 2));
+                    } catch {
+                      setImportText(raw);
+                    }
+                  };
+                  reader.readAsText(file);
+                }
+              }}
+            >
+              <textarea
+                className="h-full w-full resize-none border-none bg-transparent font-mono text-[11px] outline-none"
+                placeholder='Cole aqui um array de configs, ex.: [{"method":"POST","path":"/api/...","status":200,"body":{...},"headers":{...}}]'
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+              />
+            </div>
+
+            {importError && (
+              <div className="mb-2 rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-200">
+                {importError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-zinc-500">
+                As rotas importadas serão mescladas às existentes.
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="rounded border border-zinc-300 px-3 py-1 text-[11px] text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                  onClick={() => {
+                    if (!importing) {
+                      setImportOpen(false);
+                    }
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center rounded bg-zinc-900 px-3 py-1 text-[11px] font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                  disabled={importing}
+                  onClick={async () => {
+                    try {
+                      setImportError(null);
+                      setImporting(true);
+                      if (!importText.trim()) {
+                        throw new Error("Cole o JSON ou arraste um arquivo primeiro.");
+                      }
+                      const parsed = JSON.parse(importText) as
+                        | ApiRouteConfig[]
+                        | ApiRouteConfig;
+                      const configs = Array.isArray(parsed) ? parsed : [parsed];
+                      for (const cfg of configs) {
+                        const res = await fetch("/api/routes", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            method: cfg.method,
+                            path: cfg.path,
+                            status: cfg.status,
+                            headers: cfg.headers ?? {},
+                            responseBody: cfg.body ?? null,
+                          }),
+                        });
+                        if (!res.ok) {
+                          const text = await res.text();
+                          throw new Error(
+                            `Falha ao importar rota ${cfg.method} ${cfg.path}: ${text}`,
+                          );
+                        }
+                      }
+                      setImportOpen(false);
+                    } catch (err) {
+                      setImportError(
+                        err instanceof Error ? err.message : "Erro ao importar configs.",
+                      );
+                    } finally {
+                      setImporting(false);
+                    }
+                  }}
+                >
+                  {importing ? "Importando..." : "Importar"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
