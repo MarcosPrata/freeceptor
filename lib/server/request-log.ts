@@ -11,6 +11,9 @@ export type ApiRequestLog = {
   slug: string[];
   body: unknown;
   headers: Record<string, string>;
+  responseStatus: number;
+  responseBody: unknown;
+  responseHeaders: Record<string, string>;
 };
 
 let counter = 1;
@@ -23,11 +26,25 @@ type ChangeListener = (payload: {
 
 const listeners = new Set<ChangeListener>();
 
+function normalizePath(path: string): string {
+  if (!path) return "/";
+  let result = path.trim();
+  if (!result.startsWith("/")) {
+    result = `/${result}`;
+  }
+  // remove barra final, exceto se for apenas "/"
+  if (result.length > 1 && result.endsWith("/")) {
+    result = result.slice(0, -1);
+  }
+  return result;
+}
+
 export function addRequestLog(entry: Omit<ApiRequestLog, "id" | "timestamp">) {
   const log: ApiRequestLog = {
     id: counter++,
     timestamp: new Date().toISOString(),
     ...entry,
+    path: normalizePath(entry.path),
   };
   logs.unshift(log);
   // limita tamanho para não crescer infinito
@@ -94,11 +111,12 @@ function configKey(method: string, path: string): string {
 }
 
 export function setRouteConfig(config: ApiRouteConfig): ApiRouteConfig {
-  const key = configKey(config.method, config.path);
+  const normalizedPath = normalizePath(config.path);
+  const key = configKey(config.method, normalizedPath);
   const normalized: ApiRouteConfig = {
     ...config,
     method: config.method.toUpperCase(),
-    path: config.path || "/",
+    path: normalizedPath,
     status: config.status || 200,
     headers: config.headers ?? {},
   };
@@ -111,7 +129,7 @@ export function getRouteConfigFor(
   method: string,
   path: string,
 ): ApiRouteConfig | undefined {
-  const key = configKey(method, path);
+  const key = configKey(method, normalizePath(path));
   return routeConfigs.get(key);
 }
 

@@ -42,6 +42,7 @@ export async function CONNECT(request: Request, context: RouteContext) {
 }
 
 async function readRequest(request: Request, context: RouteContext) {
+  console.log("readRequest", request.url);
   const { slug } = await context.params;
   const url = new URL(request.url);
   const method = request.method;
@@ -54,27 +55,33 @@ async function readRequest(request: Request, context: RouteContext) {
   }
   const headers = Object.fromEntries(request.headers);
 
+  const configured = getRouteConfigFor(method, pathFromSlug);
+  const isConfigured = Boolean(configured);
+  const responseStatus = configured?.status ?? 200;
+  const responseHeaders = configured?.headers ?? {};
+  const responseBody =
+    configured?.body ??
+    ({
+      path: pathFromSlug,
+      slug: slug ?? [],
+      method,
+      body,
+      headers,
+    } as unknown);
+
   addRequestLog({
     method,
     path: pathFromSlug,
     slug: slug ?? [],
     body,
     headers,
+    responseStatus,
+    responseBody,
+    responseHeaders,
   });
 
-  const configured = getRouteConfigFor(method, pathFromSlug);
-  if (configured) {
-    return NextResponse.json(configured.body ?? null, {
-      status: configured.status,
-      headers: configured.headers,
-    });
-  }
-
-  return NextResponse.json({
-    path: pathFromSlug,
-    slug: slug ?? [],
-    method,
-    body,
-    headers,
+  return NextResponse.json(responseBody, {
+    status: responseStatus,
+    headers: responseHeaders,
   });
 }

@@ -10,6 +10,9 @@ type ApiRequestLog = {
   slug: string[];
   body: unknown;
   headers: Record<string, string>;
+  responseStatus: number;
+  responseBody: unknown;
+  responseHeaders: Record<string, string>;
 };
 
 type ApiRouteStat = {
@@ -33,6 +36,12 @@ export default function Home() {
   const [configBody, setConfigBody] = useState<string>("{}");
   const [configHeaders, setConfigHeaders] = useState<string>("{}");
   const [configMessage, setConfigMessage] = useState<string | null>(null);
+
+  function toggleLogExpanded(id: number) {
+    setExpandedIds((prev) =>
+      prev.includes(id) ? prev.filter((logId) => logId !== id) : [...prev, id],
+    );
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -177,97 +186,148 @@ export default function Home() {
                     <th className="border-b border-zinc-200 px-3 py-2 text-left dark:border-zinc-800">
                       Path
                     </th>
-                    <th className="border-b border-zinc-200 px-3 py-2 text-left dark:border-zinc-800">
-                      Body
-                    </th>
-                    <th className="border-b border-zinc-200 px-3 py-2 text-left dark:border-zinc-800">
-                      {/* coluna da setinha */}
+                    <th className="border-b border-zinc-200 px-3 py-2 text-right dark:border-zinc-800">
+                      {/* coluna do botão de expandir */}
                     </th>
                   </tr>
                 </thead>
                 <tbody>
                   {logs.map((log) => (
-                    <tr
-                      key={log.id}
-                      className="border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900/60"
-                    >
-                      <td className="px-3 py-2 align-top text-[11px] text-zinc-500">
-                        {log.id}
-                      </td>
-                      <td className="px-3 py-2 align-top font-mono text-[11px]">
-                        {new Date(log.timestamp).toLocaleTimeString()}
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <span
-                          className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold"
-                          style={{
-                            backgroundColor:
-                              log.method === "GET"
-                                ? "rgba(59,130,246,0.1)"
-                                : log.method === "POST"
-                                  ? "rgba(16,185,129,0.1)"
-                                  : "rgba(148,163,184,0.1)",
-                            color:
-                              log.method === "GET"
-                                ? "#1d4ed8"
-                                : log.method === "POST"
-                                  ? "#047857"
-                                  : "#334155",
-                          }}
-                        >
-                          {log.method}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 align-top font-mono text-[11px]">
-                        {log.slug.join(" / ") || "-"}
-                      </td>
-                      <td className="max-w-xs px-3 py-2 align-top font-mono text-[11px] text-zinc-700 dark:text-zinc-300">
-                        <pre className="whitespace-pre-wrap break-words">
-                          {log.body != null && log.body !== ""
-                            ? expandedIds.includes(log.id)
-                              ? JSON.stringify(log.body, null, 2)
-                              : (() => {
-                                  const full = JSON.stringify(log.body);
-                                  return full.length > 160
-                                    ? `${full.slice(0, 160)}…`
-                                    : full;
-                                })()
-                            : "(sem body)"}
-                        </pre>
-                      </td>
-                      <td className="px-3 py-2 align-top text-right">
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                          onClick={() =>
-                            setExpandedIds((prev) =>
-                              prev.includes(log.id)
-                                ? prev.filter((id) => id !== log.id)
-                                : [...prev, log.id],
-                            )
-                          }
-                        >
+                    <React.Fragment key={log.id}>
+                      <tr
+                        className="cursor-pointer border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900/60"
+                        onClick={() => toggleLogExpanded(log.id)}
+                      >
+                        <td className="px-3 py-2 align-top text-[11px] text-zinc-500">
+                          {log.id}
+                        </td>
+                        <td className="px-3 py-2 align-top font-mono text-[11px]">
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </td>
+                        <td className="px-3 py-2 align-top">
                           <span
-                            className="inline-block transition-transform"
+                            className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold"
                             style={{
-                              transform: expandedIds.includes(log.id)
-                                ? "rotate(90deg)"
-                                : "rotate(0deg)",
+                              backgroundColor:
+                                log.method === "GET"
+                                  ? "rgba(59,130,246,0.1)"
+                                  : log.method === "POST"
+                                    ? "rgba(16,185,129,0.1)"
+                                    : "rgba(148,163,184,0.1)",
+                              color:
+                                log.method === "GET"
+                                  ? "#1d4ed8"
+                                  : log.method === "POST"
+                                    ? "#047857"
+                                    : "#334155",
                             }}
                           >
-                            ▶
+                            {log.method}
                           </span>
-                          {expandedIds.includes(log.id)
-                            ? "Recolher"
-                            : "Expandir"}
-                        </button>
-                      </td>
-                    </tr>
+                        </td>
+                        <td className="px-3 py-2 align-top font-mono text-[11px]">
+                          {log.slug.join(" / ") || "-"}
+                        </td>
+                        <td className="px-3 py-2 align-top text-right">
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleLogExpanded(log.id);
+                            }}
+                          >
+                            <span
+                              className="inline-block transition-transform"
+                              style={{
+                                transform: expandedIds.includes(log.id)
+                                  ? "rotate(90deg)"
+                                  : "rotate(0deg)",
+                              }}
+                            >
+                              ▶
+                            </span>
+                            {expandedIds.includes(log.id)
+                              ? "Recolher"
+                              : "Expandir"}
+                          </button>
+                        </td>
+                      </tr>
+                      {expandedIds.includes(log.id) && (
+                        <tr>
+                          <td
+                            colSpan={5}
+                            className="border-b border-zinc-100 bg-zinc-50 px-3 py-3 text-[11px] text-zinc-700 dark:border-zinc-900 dark:bg-zinc-900 dark:text-zinc-200"
+                          >
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <div>
+                                <div className="mb-1 text-[11px] font-medium text-zinc-500">
+                                  Body (request)
+                                </div>
+                                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
+                                  {log.body != null && log.body !== ""
+                                    ? JSON.stringify(log.body, null, 2)
+                                    : "(sem body)"}
+                                </pre>
+                              </div>
+                              <div>
+                                <div className="mb-1 text-[11px] font-medium text-zinc-500">
+                                  Headers (request)
+                                </div>
+                                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
+                                  {Object.keys(log.headers || {}).length
+                                    ? JSON.stringify(log.headers, null, 2)
+                                    : "(sem headers)"}
+                                </pre>
+                              </div>
+                            </div>
+                            <div className="mt-3 border-t border-dashed border-zinc-200 pt-3 text-[11px] dark:border-zinc-700">
+                              <div className="mb-1 font-medium text-zinc-500">
+                                Resposta enviada
+                              </div>
+                              <div className="mb-1 flex flex-wrap items-center gap-2">
+                                <span className="inline-flex items-center rounded-full bg-zinc-900 px-2 py-0.5 font-mono text-[11px] text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900">
+                                  status {log.responseStatus}
+                                </span>
+                              </div>
+                              <div className="grid gap-3 md:grid-cols-2">
+                                <div>
+                                  <div className="mb-1 text-[11px] text-zinc-500">
+                                    Body (response)
+                                  </div>
+                                  <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
+                                    {log.responseBody != null &&
+                                    log.responseBody !== ""
+                                      ? JSON.stringify(log.responseBody, null, 2)
+                                      : "(sem body)"}
+                                  </pre>
+                                </div>
+                                <div>
+                                  <div className="mb-1 text-[11px] text-zinc-500">
+                                    Headers (response)
+                                  </div>
+                                  <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
+                                    {log.responseHeaders &&
+                                    Object.keys(log.responseHeaders).length
+                                      ? JSON.stringify(
+                                          log.responseHeaders,
+                                          null,
+                                          2,
+                                        )
+                                      : "(sem headers)"}
+                                  </pre>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   ))}
                   {!loading && logs.length === 0 && (
                     <tr>
                       <td
-                        colSpan={6}
+                        colSpan={5}
                         className="px-3 py-6 text-center text-xs text-zinc-500"
                       >
                         Nenhuma requisição registrada ainda. Faça um
