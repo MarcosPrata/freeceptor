@@ -185,97 +185,117 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
-              <div className="group relative">
-                <button
-                  type="button"
-                  aria-label="Exportar configurações de rotas"
-                  className={cn(
-                    "flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-[13px] text-zinc-700 shadow-sm transition-all duration-150 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800",
-                    activeTab === "routes"
-                      ? "scale-100 opacity-100 translate-y-0"
-                      : "pointer-events-none scale-75 opacity-0 -translate-y-1",
-                  )}
-                  onClick={async () => {
-                    try {
-                      const res = await fetch("/api/routes/configs");
-                      if (!res.ok) throw new Error(await res.text());
-                      const configs = (await res.json()) as ApiRouteConfig[];
-                      const blob = new Blob([JSON.stringify(configs, null, 2)], {
-                        type: "application/json",
-                      });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      const timestamp = new Date()
-                        .toISOString()
-                        .replace(/[:.]/g, "-");
-                      a.download = `freeceptor-route-configs-${timestamp}.json`;
-                      document.body.appendChild(a);
-                      a.click();
-                      document.body.removeChild(a);
-                      URL.revokeObjectURL(url);
-                    } catch (err) {
-                      console.error("Erro ao exportar configs:", err);
-                      setError(
-                        err instanceof Error
-                          ? `Erro ao exportar configs: ${err.message}`
-                          : "Erro ao exportar configs",
-                      );
-                    }
-                  }}
-                >
-                  ↓
-                </button>
-                <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
-                  Exportar
-                </span>
-              </div>
-              <div className="group relative">
-                <button
-                  type="button"
-                  aria-label="Importar configurações de rotas"
-                  className={cn(
-                    "flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-[13px] text-zinc-700 shadow-sm transition-all duration-150 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800",
-                    activeTab === "routes"
-                      ? "scale-100 opacity-100 translate-y-0"
-                      : "pointer-events-none scale-75 opacity-0 -translate-y-1",
-                  )}
-                  onClick={() => {
-                    setImportError(null);
-                    setImportText("");
-                    setImportOpen(true);
-                  }}
-                >
-                  ↑
-                </button>
-                <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
-                  Importar
-                </span>
-              </div>
+              {activeTab === "routes" && (
+                <>
+                  <div className="group relative">
+                    <button
+                      type="button"
+                      aria-label="Exportar configurações de rotas"
+                      className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-[13px] text-zinc-700 shadow-sm transition-all duration-150 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                      onClick={async () => {
+                        try {
+                          const res = await fetch("/api/routes/configs");
+                          if (!res.ok) throw new Error(await res.text());
+                          const configs = (await res.json()) as ApiRouteConfig[];
+                          const blob = new Blob(
+                            [JSON.stringify(configs, null, 2)],
+                            {
+                              type: "application/json",
+                            },
+                          );
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          const timestamp = new Date()
+                            .toISOString()
+                            .replace(/[:.]/g, "-");
+                          a.download = `freeceptor-route-configs-${timestamp}.json`;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          URL.revokeObjectURL(url);
+                        } catch (err) {
+                          console.error("Erro ao exportar configs:", err);
+                          setError(
+                            err instanceof Error
+                              ? `Erro ao exportar configs: ${err.message}`
+                              : "Erro ao exportar configs",
+                          );
+                        }
+                      }}
+                    >
+                      ↓
+                    </button>
+                    <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
+                      Exportar
+                    </span>
+                  </div>
+                  <div className="group relative">
+                    <button
+                      type="button"
+                      aria-label="Importar configurações de rotas"
+                      className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-[13px] text-zinc-700 shadow-sm transition-all duration-150 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                      onClick={() => {
+                        setImportError(null);
+                        setImportText("");
+                        setImportOpen(true);
+                      }}
+                    >
+                      ↑
+                    </button>
+                    <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
+                      Importar
+                    </span>
+                  </div>
+                </>
+              )}
+              {activeTab === "requests" && (
+                <div className="group relative">
+                  <button
+                    type="button"
+                    aria-label="Limpar requisições"
+                    className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-[13px] text-zinc-700 shadow-sm transition-colors hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-red-900/40 dark:hover:text-red-200"
+                    onClick={async () => {
+                      try {
+                        await fetch("/api/logs", { method: "DELETE" });
+                        setLogs([]);
+                        setExpandedIds([]);
+                      } catch (err) {
+                        console.error("Erro ao limpar requisições:", err);
+                      }
+                    }}
+                  >
+                    🗑
+                  </button>
+                  <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
+                    Limpar requisições
+                  </span>
+                </div>
+              )}
             </div>
             <div className="inline-flex rounded-full border border-zinc-300 bg-zinc-100 p-1 text-xs font-medium dark:border-zinc-700 dark:bg-zinc-900">
-            <button
-              type="button"
-              onClick={() => setActiveTab("requests")}
-              className={`rounded-full px-3 py-1 transition-colors ${
-                activeTab === "requests"
-                  ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-zinc-50"
-                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
-              }`}
-            >
-              Requests
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("routes")}
-              className={`rounded-full px-3 py-1 transition-colors ${
-                activeTab === "routes"
-                  ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-zinc-50"
-                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
-              }`}
-            >
-              Rotas
-            </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("requests")}
+                className={`rounded-full px-3 py-1 transition-colors ${
+                  activeTab === "requests"
+                    ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-zinc-50"
+                    : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                Requests
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("routes")}
+                className={`rounded-full px-3 py-1 transition-colors ${
+                  activeTab === "routes"
+                    ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-zinc-50"
+                    : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                Responses
+              </button>
             </div>
           </div>
         </header>
@@ -494,7 +514,7 @@ export default function Home() {
                       Última chamada
                     </th>
                     <th className="border-b border-zinc-200 px-3 py-2 text-right dark:border-zinc-800">
-                      Configurar
+                      Configurar resposta
                     </th>
                   </tr>
                 </thead>

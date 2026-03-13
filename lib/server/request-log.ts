@@ -168,6 +168,12 @@ export function getAllRouteConfigs(): ApiRouteConfig[] {
   return Array.from(routeConfigs.values());
 }
 
+export function clearRequestLogs(): void {
+  if (logs.length === 0) return;
+  logs.length = 0;
+  notifyChange();
+}
+
 export function getSnapshot() {
   return {
     logs: getRequestLogs(),
