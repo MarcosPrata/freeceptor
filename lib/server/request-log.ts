@@ -168,6 +168,15 @@ export function getAllRouteConfigs(): ApiRouteConfig[] {
   return Array.from(routeConfigs.values());
 }
 
+export function deleteRouteConfig(method: string, path: string): boolean {
+  const key = configKey(method, normalizePath(path));
+  const existed = routeConfigs.delete(key);
+  if (existed) {
+    notifyChange();
+  }
+  return existed;
+}
+
 export function clearRequestLogs(): void {
   if (logs.length === 0) return;
   logs.length = 0;

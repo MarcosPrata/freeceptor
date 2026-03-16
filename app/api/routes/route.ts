@@ -3,6 +3,7 @@ import {
   getRouteStatsWithConfigs,
   getAllRouteConfigs,
   setRouteConfig,
+  deleteRouteConfig,
 } from "@/lib/server/request-log";
 
 export async function GET() {
@@ -41,5 +42,21 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json(config);
+}
+
+export async function DELETE(request: Request) {
+  const body = await request.json().catch(() => null);
+  const method = body?.method as string | undefined;
+  const path = body?.path as string | undefined;
+
+  if (!method || !path) {
+    return NextResponse.json(
+      { error: "method e path são obrigatórios" },
+      { status: 400 },
+    );
+  }
+
+  const removed = deleteRouteConfig(method, path);
+  return NextResponse.json({ ok: removed });
 }
 

@@ -559,15 +559,45 @@ export default function Home() {
                           {new Date(route.lastTimestamp).toLocaleTimeString()}
                         </td>
                         <td className="px-3 py-2 align-top text-right">
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 rounded border border-zinc-300 px-2 py-1 text-[10px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                            onClick={() => {
-                              void openRouteConfig(route);
-                            }}
-                          >
-                            Configurar
-                          </button>
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 rounded border border-zinc-300 px-2 py-1 text-[10px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                              onClick={() => {
+                                void openRouteConfig(route);
+                              }}
+                            >
+                              Configurar
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Remover configuração desta rota"
+                              className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-300 text-[11px] text-zinc-600 hover:bg-red-50 hover:text-red-700 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-red-900/40 dark:hover:text-red-200"
+                              onClick={async () => {
+                                try {
+                                  await fetch("/api/routes", {
+                                    method: "DELETE",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({
+                                      method: route.method,
+                                      path: route.path,
+                                    }),
+                                  });
+                                  if (configRouteId === route.id) {
+                                    setConfigRouteId(null);
+                                    setConfigMessage(null);
+                                  }
+                                } catch (err) {
+                                  console.error(
+                                    "Erro ao remover configuração da rota:",
+                                    err,
+                                  );
+                                }
+                              }}
+                            >
+                              🗑
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {configRouteId === route.id && (
