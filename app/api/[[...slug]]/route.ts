@@ -44,8 +44,10 @@ export async function CONNECT(request: Request, context: RouteContext) {
 async function readRequest(request: Request, context: RouteContext) {
   console.log("readRequest", request.url);
   const { slug } = await context.params;
+  const url = new URL(request.url);
   const method = request.method;
   const pathFromSlug = slug && slug.length ? `/${slug.join("/")}` : "/";
+  const queryParams = toQueryObject(url.searchParams);
   let body: unknown = null;
   const contentType = request.headers.get("content-type") ?? "";
 
@@ -94,6 +96,7 @@ async function readRequest(request: Request, context: RouteContext) {
     ({
       path: pathFromSlug,
       slug: slug ?? [],
+      queryParams,
       method,
       body,
       headers,
@@ -103,6 +106,7 @@ async function readRequest(request: Request, context: RouteContext) {
     method,
     path: pathFromSlug,
     slug: slug ?? [],
+    queryParams,
     body,
     headers,
     responseStatus,
@@ -114,4 +118,21 @@ async function readRequest(request: Request, context: RouteContext) {
     status: responseStatus,
     headers: responseHeaders,
   });
+}
+
+function toQueryObject(
+  searchParams: URLSearchParams,
+): Record<string, string | string[]> {
+  const query: Record<string, string | string[]> = {};
+
+  for (const key of searchParams.keys()) {
+    const allValues = searchParams.getAll(key);
+    if (allValues.length <= 1) {
+      query[key] = allValues[0] ?? "";
+      continue;
+    }
+    query[key] = allValues;
+  }
+
+  return query;
 }

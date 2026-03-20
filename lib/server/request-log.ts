@@ -9,6 +9,7 @@ export type ApiRequestLog = {
   method: string;
   path: string;
   slug: string[];
+  queryParams: Record<string, string | string[]>;
   body: unknown;
   headers: Record<string, string>;
   responseStatus: number;
