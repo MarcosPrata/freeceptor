@@ -141,7 +141,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"requests" | "routes">("requests");
   const [configRouteId, setConfigRouteId] = useState<string | null>(null);
   const [configStatus, setConfigStatus] = useState<string>("200");
-  const [configBody, setConfigBody] = useState<string>("{}");
+  const [configBody, setConfigBody] = useState<string>('{"status":"ok"}');
   const [configHeaders, setConfigHeaders] = useState<string>("{}");
   const [configProxyMode, setConfigProxyMode] = useState(false);
   const [configProxyUrl, setConfigProxyUrl] = useState("");
@@ -169,7 +169,7 @@ export default function Home() {
     setConfigRouteId(route.id);
     setConfigMessage(null);
     setConfigStatus("200");
-    setConfigBody("{}");
+    setConfigBody('{"status":"ok"}');
     setConfigHeaders("{}");
     setConfigProxyMode(false);
     setConfigProxyUrl("");
@@ -188,7 +188,7 @@ export default function Home() {
         setConfigBody(
           match.body !== undefined && match.body !== null
             ? JSON.stringify(match.body, null, 2)
-            : "{}",
+            : '{"status":"ok"}',
         );
         setConfigHeaders(
           match.headers && Object.keys(match.headers).length
@@ -659,7 +659,7 @@ export default function Home() {
                               // mantém o card aberto com feedback e campos resetados
                               setConfigRouteId(route.id);
                               setConfigStatus("200");
-                              setConfigBody("{}");
+                              setConfigBody('{"status":"ok"}');
                               setConfigHeaders("{}");
                               setConfigProxyMode(false);
                               setConfigProxyUrl("");
@@ -759,7 +759,12 @@ export default function Home() {
                               />
                             )}
                           </div>
-                          <div className="flex flex-wrap gap-2">
+                          <div
+                            className={cn(
+                              "flex flex-wrap gap-2 transition-opacity",
+                              configProxyMode && "opacity-50",
+                            )}
+                          >
                             <label className="flex items-center gap-1 text-[11px]">
                               <span className="text-zinc-500">Status</span>
                               <input
@@ -773,7 +778,12 @@ export default function Home() {
                               />
                             </label>
                           </div>
-                          <div className="grid gap-2 md:grid-cols-2">
+                          <div
+                            className={cn(
+                              "grid gap-2 md:grid-cols-2 transition-opacity",
+                              configProxyMode && "opacity-50",
+                            )}
+                          >
                             <label className="flex flex-col gap-1">
                               <span className="text-[11px] text-zinc-500">Body (JSON)</span>
                               <textarea
