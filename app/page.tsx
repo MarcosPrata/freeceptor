@@ -132,6 +132,22 @@ function safeParseJson(value: string): unknown {
   }
 }
 
+function normalizeServerName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function getServerFromPathname(pathname: string): string {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] === "server" && parts[1]) {
+    return normalizeServerName(decodeURIComponent(parts[1]));
+  }
+  return "";
+}
+
+function buildServerPath(serverName: string): string {
+  return `/server/${encodeURIComponent(serverName)}`;
+}
+
 export default function Home() {
   const [sessionReady, setSessionReady] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
@@ -224,6 +240,7 @@ export default function Home() {
     let cancelled = false;
     async function loadSession() {
       try {
+        const serverFromPath = getServerFromPathname(window.location.pathname);
         const res = await fetch("/api/server/session");
         if (!res.ok) throw new Error(await res.text());
         const data = (await res.json()) as {
@@ -231,15 +248,76 @@ export default function Home() {
           serverName?: string;
         };
         if (cancelled) return;
-        setAuthenticated(Boolean(data.authenticated));
-        setCurrentServerName(data.serverName ?? "");
-        if (data.serverName) {
-          setLoginServerName(data.serverName);
+
+        if (!data.authenticated) {
+          setAuthenticated(false);
+          setCurrentServerName("");
+          setLoginServerName(serverFromPath);
+          setLoginPassword("");
+          return;
+        }
+
+        const sessionServer = normalizeServerName(data.serverName ?? "");
+
+        // Se a URL pedir outro server, tenta trocar automaticamente
+        // (funciona para servers sem senha; com senha cai no login)
+        if (serverFromPath && serverFromPath !== sessionServer) {
+          try {
+            const switchRes = await fetch("/api/server/login", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                serverName: serverFromPath,
+                password: "",
+              }),
+            });
+            if (!switchRes.ok) {
+              setAuthenticated(false);
+              setCurrentServerName("");
+              setLoginServerName(serverFromPath);
+              setLoginPassword("");
+              setLoginError("Informe a senha para acessar este server.");
+              return;
+            }
+            const switched = (await switchRes.json()) as {
+              ok: boolean;
+              serverName: string;
+            };
+            if (switched.ok) {
+              setAuthenticated(true);
+              setCurrentServerName(switched.serverName);
+              setLoginServerName(switched.serverName);
+              setLoginPassword("");
+              setError(null);
+              setLoading(true);
+              return;
+            }
+          } catch {
+            setAuthenticated(false);
+            setCurrentServerName("");
+            setLoginServerName(serverFromPath);
+            setLoginPassword("");
+            setLoginError("Não foi possível trocar de server automaticamente.");
+            return;
+          }
+        }
+
+        setAuthenticated(true);
+        setCurrentServerName(sessionServer);
+        setLoginServerName(sessionServer);
+        setLoginPassword("");
+        setError(null);
+
+        // expõe server atual na URL
+        if (!serverFromPath || serverFromPath !== sessionServer) {
+          window.history.replaceState({}, "", buildServerPath(sessionServer));
         }
       } catch {
         if (!cancelled) {
           setAuthenticated(false);
           setCurrentServerName("");
+          const serverFromPath = getServerFromPathname(window.location.pathname);
+          setLoginServerName(serverFromPath);
         }
       } finally {
         if (!cancelled) {
@@ -357,6 +435,11 @@ export default function Home() {
                 if (data.ok) {
                   setAuthenticated(true);
                   setCurrentServerName(data.serverName);
+                  window.history.replaceState(
+                    {},
+                    "",
+                    buildServerPath(data.serverName),
+                  );
                   setLoading(true);
                   return;
                 }

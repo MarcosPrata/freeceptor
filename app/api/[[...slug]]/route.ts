@@ -118,16 +118,7 @@ async function readRequest(request: Request, context: RouteContext) {
   const configured = await getRouteConfigFor(serverName, method, pathFromSlug);
   let responseStatus = configured?.status ?? 200;
   let responseHeaders = configured?.headers ?? {};
-  let responseBody =
-    configured?.body ??
-    ({
-      path: pathFromSlug,
-      slug: slug ?? [],
-      queryParams,
-      method,
-      body,
-      headers,
-    } as unknown);
+  let responseBody = configured?.body ?? ({ status: "ok" } as unknown);
 
   let proxyRawResponseBody: ArrayBuffer | null = null;
 
