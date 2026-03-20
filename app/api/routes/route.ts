@@ -1,19 +1,13 @@
 import { NextResponse } from "next/server";
 import {
   getRouteStatsWithConfigs,
-  getAllRouteConfigs,
   setRouteConfig,
   deleteRouteConfig,
 } from "@/lib/server/request-log";
 
 export async function GET() {
-  const routes = getRouteStatsWithConfigs();
+  const routes = await getRouteStatsWithConfigs();
   return NextResponse.json(routes);
-}
-
-export async function GETConfigs() {
-  const configs = getAllRouteConfigs();
-  return NextResponse.json(configs);
 }
 
 export async function POST(request: Request) {
@@ -35,7 +29,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const config = setRouteConfig({
+  const config = await setRouteConfig({
     method,
     path,
     status: status ?? 200,
@@ -60,7 +54,7 @@ export async function DELETE(request: Request) {
     );
   }
 
-  const removed = deleteRouteConfig(method, path);
+  const removed = await deleteRouteConfig(method, path);
   return NextResponse.json({ ok: removed });
 }
 

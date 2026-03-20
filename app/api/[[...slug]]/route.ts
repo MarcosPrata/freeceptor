@@ -91,7 +91,7 @@ async function readRequest(request: Request, context: RouteContext) {
   }
   const headers = Object.fromEntries(request.headers);
 
-  const configured = getRouteConfigFor(method, pathFromSlug);
+  const configured = await getRouteConfigFor(method, pathFromSlug);
   let responseStatus = configured?.status ?? 200;
   let responseHeaders = configured?.headers ?? {};
   let responseBody =
@@ -130,7 +130,7 @@ async function readRequest(request: Request, context: RouteContext) {
     }
   }
 
-  addRequestLog({
+  await addRequestLog({
     method,
     path: pathFromSlug,
     slug: slug ?? [],

@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 import { getRequestLogs, clearRequestLogs } from "@/lib/server/request-log";
 
 export async function GET() {
-  const logs = getRequestLogs();
+  const logs = await getRequestLogs();
   return NextResponse.json(logs);
 }
 
 export async function DELETE() {
-  clearRequestLogs();
+  await clearRequestLogs();
   return NextResponse.json({ ok: true });
 }
 

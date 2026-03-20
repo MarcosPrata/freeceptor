@@ -11,14 +11,14 @@ export async function GET(request: Request) {
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
+    async start(controller) {
       function send(data: unknown) {
         const json = JSON.stringify(data);
         controller.enqueue(encoder.encode(`data: ${json}\n\n`));
       }
 
       // envia snapshot inicial
-      send({ type: "snapshot", ...getSnapshot() });
+      send({ type: "snapshot", ...(await getSnapshot()) });
 
       // assina mudanças
       const unsubscribe = subscribeToChanges((payload) => {
@@ -36,7 +36,7 @@ export async function GET(request: Request) {
     },
   });
 
-  return new NextResponse(stream as any, {
+  return new NextResponse(stream, {
     status: 200,
     headers: {
       "Content-Type": "text/event-stream",

@@ -1,7 +1,4 @@
-/**
- * Logger em memória para requests em /api.
- * Em produção você pode trocar por banco, Redis, etc.
- */
+import { getDb } from "@/lib/server/mongo";
 
 export type ApiRequestLog = {
   id: number;
@@ -18,48 +15,6 @@ export type ApiRequestLog = {
   responseHeaders: Record<string, string>;
 };
 
-let counter = 1;
-const logs: ApiRequestLog[] = [];
-
-type ChangeListener = (payload: {
-  logs: ApiRequestLog[];
-  routes: ApiRouteStat[];
-}) => void;
-
-const listeners = new Set<ChangeListener>();
-
-function normalizePath(path: string): string {
-  if (!path) return "/";
-  let result = path.trim();
-  if (!result.startsWith("/")) {
-    result = `/${result}`;
-  }
-  // remove barra final, exceto se for apenas "/"
-  if (result.length > 1 && result.endsWith("/")) {
-    result = result.slice(0, -1);
-  }
-  return result;
-}
-
-export function addRequestLog(entry: Omit<ApiRequestLog, "id" | "timestamp">) {
-  const log: ApiRequestLog = {
-    id: counter++,
-    timestamp: new Date().toISOString(),
-    ...entry,
-    path: normalizePath(entry.path),
-  };
-  logs.unshift(log);
-  // limita tamanho para não crescer infinito
-  if (logs.length > 200) {
-    logs.length = 200;
-  }
-  notifyChange();
-}
-
-export function getRequestLogs(): ApiRequestLog[] {
-  return logs;
-}
-
 export type ApiRouteStat = {
   id: string;
   method: string;
@@ -69,46 +24,189 @@ export type ApiRouteStat = {
   lastTimestamp: string;
 };
 
-export function getRouteStats(): ApiRouteStat[] {
-  const map = new Map<string, ApiRouteStat>();
+export type ApiRouteConfig = {
+  method: string;
+  path: string;
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+  proxyMode?: boolean;
+  proxyUrl?: string;
+};
 
-  for (const log of logs) {
-    const pathFromSlug = log.slug.length ? `/${log.slug.join("/")}` : "/";
-    const key = `${log.method} ${pathFromSlug}`;
-    const existing = map.get(key);
-    if (!existing) {
-      map.set(key, {
-        id: key,
-        method: log.method,
-        path: pathFromSlug,
-        count: 1,
-        firstTimestamp: log.timestamp,
-        lastTimestamp: log.timestamp,
-      });
-    } else {
-      existing.count += 1;
-      existing.lastTimestamp = log.timestamp;
-    }
-  }
+type LogDoc = {
+  _id: string;
+} & Omit<ApiRequestLog, "id">;
 
-  return Array.from(map.values()).sort((a, b) =>
-    a.path === b.path
-      ? a.method.localeCompare(b.method)
-      : a.path.localeCompare(b.path),
-  );
+type RouteConfigDoc = {
+  _id: string;
+} & ApiRouteConfig;
+
+type ChangeListener = (payload: {
+  logs: ApiRequestLog[];
+  routes: ApiRouteStat[];
+}) => void;
+
+const listeners = new Set<ChangeListener>();
+
+async function logsCollection() {
+  const db = await getDb();
+  return db.collection<LogDoc>("request_logs");
 }
 
-export function getRouteStatsWithConfigs(): ApiRouteStat[] {
-  const baseStats = getRouteStats();
+async function routeConfigsCollection() {
+  const db = await getDb();
+  return db.collection<RouteConfigDoc>("route_configs");
+}
+
+function normalizePath(path: string): string {
+  if (!path) return "/";
+  let result = path.trim();
+  if (!result.startsWith("/")) {
+    result = `/${result}`;
+  }
+  if (result.length > 1 && result.endsWith("/")) {
+    result = result.slice(0, -1);
+  }
+  return result;
+}
+
+function configKey(method: string, path: string): string {
+  return `${method.toUpperCase()} ${path}`;
+}
+
+function parseLogIndexFromId(id: string): number {
+  const [head] = id.split(":");
+  const value = Number(head);
+  return Number.isNaN(value) ? 0 : value;
+}
+
+function mapConfig(config: ApiRouteConfig | RouteConfigDoc): ApiRouteConfig {
+  return {
+    ...config,
+    method: config.method.toUpperCase(),
+    path: normalizePath(config.path),
+    status: config.status || 200,
+    headers: config.headers ?? {},
+    proxyMode: Boolean(config.proxyMode),
+    proxyUrl: config.proxyUrl?.trim() ?? "",
+  };
+}
+
+export async function addRequestLog(
+  entry: Omit<ApiRequestLog, "id" | "timestamp">,
+): Promise<void> {
+  const collection = await logsCollection();
+  const now = new Date();
+  const normalizedPath = normalizePath(entry.path);
+  const normalizedTimestamp = now.toISOString();
+  const uniqueId = `${Date.now()}:${Math.floor(Math.random() * 1_000_000)}`;
+
+  await collection.insertOne({
+    ...entry,
+    path: normalizedPath,
+    timestamp: normalizedTimestamp,
+    _id: uniqueId,
+  });
+
+  await collection
+    .find({}, { projection: { _id: 1 } })
+    .sort({ timestamp: -1 })
+    .skip(200)
+    .toArray()
+    .then(async (overflow) => {
+      if (!overflow.length) return;
+      const ids = overflow.map((doc) => doc._id);
+      if (!ids.length) return;
+      await collection.deleteMany({ _id: { $in: ids } });
+    });
+
+  await notifyChange();
+}
+
+export async function getRequestLogs(): Promise<ApiRequestLog[]> {
+  const collection = await logsCollection();
+  const docs = await collection
+    .find({}, { projection: { _id: 1, timestamp: 1, method: 1, path: 1, slug: 1, queryParams: 1, proxyTargetUrl: 1, body: 1, headers: 1, responseStatus: 1, responseBody: 1, responseHeaders: 1 } })
+    .sort({ timestamp: -1 })
+    .limit(200)
+    .toArray();
+
+  return docs.map((doc) => {
+    return {
+      id: parseLogIndexFromId(doc._id),
+      timestamp: doc.timestamp,
+      method: doc.method,
+      path: doc.path,
+      slug: doc.slug ?? [],
+      queryParams: doc.queryParams ?? {},
+      proxyTargetUrl: doc.proxyTargetUrl,
+      body: doc.body ?? null,
+      headers: doc.headers ?? {},
+      responseStatus: doc.responseStatus ?? 200,
+      responseBody: doc.responseBody ?? null,
+      responseHeaders: doc.responseHeaders ?? {},
+    };
+  });
+}
+
+export async function getRouteStats(): Promise<ApiRouteStat[]> {
+  const collection = await logsCollection();
+
+  const grouped = await collection
+    .aggregate<{
+      _id: { method: string; path: string };
+      count: number;
+      firstTimestamp: string;
+      lastTimestamp: string;
+    }>([
+      {
+        $group: {
+          _id: { method: "$method", path: "$path" },
+          count: { $sum: 1 },
+          firstTimestamp: { $min: "$timestamp" },
+          lastTimestamp: { $max: "$timestamp" },
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          count: 1,
+          firstTimestamp: 1,
+          lastTimestamp: 1,
+        },
+      },
+    ])
+    .toArray();
+
+  return grouped
+    .map((row) => ({
+      id: `${row._id.method} ${row._id.path}`,
+      method: row._id.method,
+      path: row._id.path,
+      count: row.count,
+      firstTimestamp: row.firstTimestamp ?? "",
+      lastTimestamp: row.lastTimestamp ?? "",
+    }))
+    .sort((a, b) =>
+      a.path === b.path
+        ? a.method.localeCompare(b.method)
+        : a.path.localeCompare(b.path),
+    );
+}
+
+export async function getRouteStatsWithConfigs(): Promise<ApiRouteStat[]> {
+  const [baseStats, configs] = await Promise.all([
+    getRouteStats(),
+    getAllRouteConfigs(),
+  ]);
   const map = new Map<string, ApiRouteStat>();
 
   for (const stat of baseStats) {
-    const key = `${stat.method} ${stat.path}`;
-    map.set(key, stat);
+    map.set(`${stat.method} ${stat.path}`, stat);
   }
 
-  // garante que toda rota configurada apareça, mesmo sem chamadas
-  for (const cfg of getAllRouteConfigs()) {
+  for (const cfg of configs) {
     const key = configKey(cfg.method, cfg.path);
     if (!map.has(key)) {
       map.set(key, {
@@ -129,71 +227,75 @@ export function getRouteStatsWithConfigs(): ApiRouteStat[] {
   );
 }
 
-export type ApiRouteConfig = {
-  method: string;
-  path: string;
-  status: number;
-  body: unknown;
-  headers: Record<string, string>;
-  proxyMode?: boolean;
-  proxyUrl?: string;
-};
+export async function setRouteConfig(
+  config: ApiRouteConfig,
+): Promise<ApiRouteConfig> {
+  const collection = await routeConfigsCollection();
+  const normalized = mapConfig(config);
+  const key = configKey(normalized.method, normalized.path);
 
-const routeConfigs = new Map<string, ApiRouteConfig>();
+  await collection.updateOne(
+    { _id: key },
+    {
+      $set: {
+        method: normalized.method,
+        path: normalized.path,
+        status: normalized.status,
+        body: normalized.body,
+        headers: normalized.headers,
+        proxyMode: normalized.proxyMode,
+        proxyUrl: normalized.proxyUrl,
+      },
+    },
+    { upsert: true },
+  );
 
-function configKey(method: string, path: string): string {
-  return `${method.toUpperCase()} ${path}`;
-}
-
-export function setRouteConfig(config: ApiRouteConfig): ApiRouteConfig {
-  const normalizedPath = normalizePath(config.path);
-  const key = configKey(config.method, normalizedPath);
-  const normalized: ApiRouteConfig = {
-    ...config,
-    method: config.method.toUpperCase(),
-    path: normalizedPath,
-    status: config.status || 200,
-    headers: config.headers ?? {},
-    proxyMode: Boolean(config.proxyMode),
-    proxyUrl: config.proxyUrl?.trim() ?? "",
-  };
-  routeConfigs.set(key, normalized);
-  notifyChange();
+  await notifyChange();
   return normalized;
 }
 
-export function getRouteConfigFor(
+export async function getRouteConfigFor(
   method: string,
   path: string,
-): ApiRouteConfig | undefined {
+): Promise<ApiRouteConfig | undefined> {
+  const collection = await routeConfigsCollection();
   const key = configKey(method, normalizePath(path));
-  return routeConfigs.get(key);
+  const doc = await collection.findOne({ _id: key });
+  if (!doc) return undefined;
+  return mapConfig(doc);
 }
 
-export function getAllRouteConfigs(): ApiRouteConfig[] {
-  return Array.from(routeConfigs.values());
+export async function getAllRouteConfigs(): Promise<ApiRouteConfig[]> {
+  const collection = await routeConfigsCollection();
+  const docs = await collection.find({}).toArray();
+  return docs.map((doc) => mapConfig(doc));
 }
 
-export function deleteRouteConfig(method: string, path: string): boolean {
+export async function deleteRouteConfig(
+  method: string,
+  path: string,
+): Promise<boolean> {
+  const collection = await routeConfigsCollection();
   const key = configKey(method, normalizePath(path));
-  const existed = routeConfigs.delete(key);
-  if (existed) {
-    notifyChange();
+  const result = await collection.deleteOne({ _id: key });
+  if (result.deletedCount) {
+    await notifyChange();
   }
-  return existed;
+  return Boolean(result.deletedCount);
 }
 
-export function clearRequestLogs(): void {
-  if (logs.length === 0) return;
-  logs.length = 0;
-  notifyChange();
+export async function clearRequestLogs(): Promise<void> {
+  const collection = await logsCollection();
+  await collection.deleteMany({});
+  await notifyChange();
 }
 
-export function getSnapshot() {
-  return {
-    logs: getRequestLogs(),
-    routes: getRouteStatsWithConfigs(),
-  };
+export async function getSnapshot() {
+  const [logs, routes] = await Promise.all([
+    getRequestLogs(),
+    getRouteStatsWithConfigs(),
+  ]);
+  return { logs, routes };
 }
 
 export function subscribeToChanges(listener: ChangeListener): () => void {
@@ -203,9 +305,9 @@ export function subscribeToChanges(listener: ChangeListener): () => void {
   };
 }
 
-function notifyChange() {
+async function notifyChange() {
   if (listeners.size === 0) return;
-  const snapshot = getSnapshot();
+  const snapshot = await getSnapshot();
   for (const listener of listeners) {
     try {
       listener(snapshot);
