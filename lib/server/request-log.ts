@@ -36,10 +36,12 @@ export type ApiRouteConfig = {
 
 type LogDoc = {
   _id: string;
+  serverName: string;
 } & Omit<ApiRequestLog, "id">;
 
 type RouteConfigDoc = {
   _id: string;
+  serverName: string;
 } & ApiRouteConfig;
 
 type ChangeListener = (payload: {
@@ -47,7 +49,12 @@ type ChangeListener = (payload: {
   routes: ApiRouteStat[];
 }) => void;
 
-const listeners = new Set<ChangeListener>();
+type ListenerEntry = {
+  serverName: string;
+  listener: ChangeListener;
+};
+
+const listeners = new Set<ListenerEntry>();
 
 async function logsCollection() {
   const db = await getDb();
@@ -94,6 +101,7 @@ function mapConfig(config: ApiRouteConfig | RouteConfigDoc): ApiRouteConfig {
 }
 
 export async function addRequestLog(
+  serverName: string,
   entry: Omit<ApiRequestLog, "id" | "timestamp">,
 ): Promise<void> {
   const collection = await logsCollection();
@@ -103,6 +111,7 @@ export async function addRequestLog(
   const uniqueId = `${Date.now()}:${Math.floor(Math.random() * 1_000_000)}`;
 
   await collection.insertOne({
+    serverName,
     ...entry,
     path: normalizedPath,
     timestamp: normalizedTimestamp,
@@ -110,7 +119,7 @@ export async function addRequestLog(
   });
 
   await collection
-    .find({}, { projection: { _id: 1 } })
+    .find({ serverName }, { projection: { _id: 1 } })
     .sort({ timestamp: -1 })
     .skip(200)
     .toArray()
@@ -124,10 +133,28 @@ export async function addRequestLog(
   await notifyChange();
 }
 
-export async function getRequestLogs(): Promise<ApiRequestLog[]> {
+export async function getRequestLogs(serverName: string): Promise<ApiRequestLog[]> {
   const collection = await logsCollection();
   const docs = await collection
-    .find({}, { projection: { _id: 1, timestamp: 1, method: 1, path: 1, slug: 1, queryParams: 1, proxyTargetUrl: 1, body: 1, headers: 1, responseStatus: 1, responseBody: 1, responseHeaders: 1 } })
+    .find(
+      { serverName },
+      {
+        projection: {
+          _id: 1,
+          timestamp: 1,
+          method: 1,
+          path: 1,
+          slug: 1,
+          queryParams: 1,
+          proxyTargetUrl: 1,
+          body: 1,
+          headers: 1,
+          responseStatus: 1,
+          responseBody: 1,
+          responseHeaders: 1,
+        },
+      },
+    )
     .sort({ timestamp: -1 })
     .limit(200)
     .toArray();
@@ -150,7 +177,7 @@ export async function getRequestLogs(): Promise<ApiRequestLog[]> {
   });
 }
 
-export async function getRouteStats(): Promise<ApiRouteStat[]> {
+export async function getRouteStats(serverName: string): Promise<ApiRouteStat[]> {
   const collection = await logsCollection();
 
   const grouped = await collection
@@ -160,6 +187,7 @@ export async function getRouteStats(): Promise<ApiRouteStat[]> {
       firstTimestamp: string;
       lastTimestamp: string;
     }>([
+      { $match: { serverName } },
       {
         $group: {
           _id: { method: "$method", path: "$path" },
@@ -195,10 +223,12 @@ export async function getRouteStats(): Promise<ApiRouteStat[]> {
     );
 }
 
-export async function getRouteStatsWithConfigs(): Promise<ApiRouteStat[]> {
+export async function getRouteStatsWithConfigs(
+  serverName: string,
+): Promise<ApiRouteStat[]> {
   const [baseStats, configs] = await Promise.all([
-    getRouteStats(),
-    getAllRouteConfigs(),
+    getRouteStats(serverName),
+    getAllRouteConfigs(serverName),
   ]);
   const map = new Map<string, ApiRouteStat>();
 
@@ -228,6 +258,7 @@ export async function getRouteStatsWithConfigs(): Promise<ApiRouteStat[]> {
 }
 
 export async function setRouteConfig(
+  serverName: string,
   config: ApiRouteConfig,
 ): Promise<ApiRouteConfig> {
   const collection = await routeConfigsCollection();
@@ -235,9 +266,10 @@ export async function setRouteConfig(
   const key = configKey(normalized.method, normalized.path);
 
   await collection.updateOne(
-    { _id: key },
+    { _id: key, serverName },
     {
       $set: {
+        serverName,
         method: normalized.method,
         path: normalized.path,
         status: normalized.status,
@@ -255,60 +287,69 @@ export async function setRouteConfig(
 }
 
 export async function getRouteConfigFor(
+  serverName: string,
   method: string,
   path: string,
 ): Promise<ApiRouteConfig | undefined> {
   const collection = await routeConfigsCollection();
   const key = configKey(method, normalizePath(path));
-  const doc = await collection.findOne({ _id: key });
+  const doc = await collection.findOne({ _id: key, serverName });
   if (!doc) return undefined;
   return mapConfig(doc);
 }
 
-export async function getAllRouteConfigs(): Promise<ApiRouteConfig[]> {
+export async function getAllRouteConfigs(
+  serverName: string,
+): Promise<ApiRouteConfig[]> {
   const collection = await routeConfigsCollection();
-  const docs = await collection.find({}).toArray();
+  const docs = await collection.find({ serverName }).toArray();
   return docs.map((doc) => mapConfig(doc));
 }
 
 export async function deleteRouteConfig(
+  serverName: string,
   method: string,
   path: string,
 ): Promise<boolean> {
   const collection = await routeConfigsCollection();
   const key = configKey(method, normalizePath(path));
-  const result = await collection.deleteOne({ _id: key });
+  const result = await collection.deleteOne({ _id: key, serverName });
   if (result.deletedCount) {
     await notifyChange();
   }
   return Boolean(result.deletedCount);
 }
 
-export async function clearRequestLogs(): Promise<void> {
+export async function clearRequestLogs(serverName: string): Promise<void> {
   const collection = await logsCollection();
-  await collection.deleteMany({});
+  await collection.deleteMany({ serverName });
   await notifyChange();
 }
 
-export async function getSnapshot() {
+export async function getSnapshot(serverName: string) {
   const [logs, routes] = await Promise.all([
-    getRequestLogs(),
-    getRouteStatsWithConfigs(),
+    getRequestLogs(serverName),
+    getRouteStatsWithConfigs(serverName),
   ]);
   return { logs, routes };
 }
 
-export function subscribeToChanges(listener: ChangeListener): () => void {
-  listeners.add(listener);
+export function subscribeToChanges(
+  serverName: string,
+  listener: ChangeListener,
+): () => void {
+  const entry: ListenerEntry = { serverName, listener };
+  listeners.add(entry);
   return () => {
-    listeners.delete(listener);
+    listeners.delete(entry);
   };
 }
 
 async function notifyChange() {
   if (listeners.size === 0) return;
-  const snapshot = await getSnapshot();
-  for (const listener of listeners) {
+  for (const entry of listeners) {
+    const { serverName, listener } = entry;
+    const snapshot = await getSnapshot(serverName);
     try {
       listener(snapshot);
     } catch {

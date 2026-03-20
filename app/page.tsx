@@ -133,6 +133,13 @@ function safeParseJson(value: string): unknown {
 }
 
 export default function Home() {
+  const [sessionReady, setSessionReady] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [currentServerName, setCurrentServerName] = useState("");
+  const [loginServerName, setLoginServerName] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginSubmitting, setLoginSubmitting] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [logs, setLogs] = useState<ApiRequestLog[]>([]);
   const [routes, setRoutes] = useState<ApiRouteStat[]>([]);
   const [loading, setLoading] = useState(true);
@@ -215,6 +222,40 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false;
+    async function loadSession() {
+      try {
+        const res = await fetch("/api/server/session");
+        if (!res.ok) throw new Error(await res.text());
+        const data = (await res.json()) as {
+          authenticated: boolean;
+          serverName?: string;
+        };
+        if (cancelled) return;
+        setAuthenticated(Boolean(data.authenticated));
+        setCurrentServerName(data.serverName ?? "");
+        if (data.serverName) {
+          setLoginServerName(data.serverName);
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthenticated(false);
+          setCurrentServerName("");
+        }
+      } finally {
+        if (!cancelled) {
+          setSessionReady(true);
+        }
+      }
+    }
+    loadSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let cancelled = false;
 
     // primeiro snapshot via HTTP, para fallback rápido
     async function initialLoad() {
@@ -273,7 +314,106 @@ export default function Home() {
       cancelled = true;
       es.close();
     };
-  }, []);
+  }, [authenticated]);
+
+  if (!sessionReady) {
+    return (
+      <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
+        <main className="mx-auto flex min-h-screen max-w-md items-center px-4">
+          <div className="w-full rounded-lg border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-sm text-zinc-600 dark:text-zinc-300">Carregando...</p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (!authenticated) {
+    return (
+      <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
+        <main className="mx-auto flex min-h-screen max-w-md items-center px-4">
+          <form
+            className="w-full rounded-lg border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setLoginError(null);
+              setLoginSubmitting(true);
+              try {
+                const res = await fetch("/api/server/login", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    serverName: loginServerName.trim(),
+                    password: loginPassword,
+                  }),
+                });
+                if (!res.ok) {
+                  throw new Error(await res.text());
+                }
+                const data = (await res.json()) as {
+                  ok: boolean;
+                  serverName: string;
+                };
+                if (data.ok) {
+                  setAuthenticated(true);
+                  setCurrentServerName(data.serverName);
+                  setLoading(true);
+                  return;
+                }
+                throw new Error("Falha ao autenticar.");
+              } catch (err) {
+                setLoginError(
+                  err instanceof Error ? err.message : "Falha ao autenticar servidor.",
+                );
+              } finally {
+                setLoginSubmitting(false);
+              }
+            }}
+          >
+            <h1 className="text-xl font-semibold tracking-tight">Freeceptor</h1>
+            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+              Entre com o server config para acessar requests e rotas.
+            </p>
+            <div className="mt-4 space-y-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-zinc-500">Server name</span>
+                <input
+                  type="text"
+                  className="h-9 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                  value={loginServerName}
+                  onChange={(e) => setLoginServerName(e.target.value)}
+                  placeholder="ex: antifraude"
+                  required
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-zinc-500">Senha (opcional)</span>
+                <input
+                  type="password"
+                  className="h-9 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="Digite a senha do server"
+                />
+              </label>
+            </div>
+            {loginError && (
+              <div className="mt-3 rounded-md bg-red-100 px-3 py-2 text-xs text-red-800 dark:bg-red-900/40 dark:text-red-200">
+                {loginError}
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={loginSubmitting}
+              className="mt-4 inline-flex h-9 items-center rounded bg-zinc-900 px-4 text-sm font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+            >
+              {loginSubmitting ? "Entrando..." : "Entrar"}
+            </button>
+          </form>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
@@ -284,7 +424,11 @@ export default function Home() {
               Freeceptor
             </h1>
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              Toda chamada a <code>/api/*</code> aparece aqui em tempo real.
+              Toda chamada a <code>/api/{currentServerName}/*</code> aparece aqui em
+              tempo real.
+            </p>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              Server ativo: <code>{currentServerName}</code>
             </p>
           </div>
           <div className="flex items-center gap-3">

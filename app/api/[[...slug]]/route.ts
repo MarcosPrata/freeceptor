@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { addRequestLog, getRouteConfigFor } from "@/lib/server/request-log";
+import {
+  addRequestLog,
+  getRouteConfigFor,
+  setRouteConfig,
+} from "@/lib/server/request-log";
+import { ensureServerConfigExists } from "@/lib/server/server-config";
 
 type RouteContext = {
   params: Promise<{ slug?: string[] }>;
@@ -44,8 +49,27 @@ export async function CONNECT(request: Request, context: RouteContext) {
 async function readRequest(request: Request, context: RouteContext) {
   console.log("readRequest", request.url);
   const { slug } = await context.params;
+  if (!slug?.length) {
+    return NextResponse.json(
+      {
+        error:
+          "Rota inválida. Use o padrão /api/<nome-do-server>/* para registrar chamadas.",
+      },
+      { status: 404 },
+    );
+  }
+
+  const serverNameFromPath = normalizeServerSlug(slug[0]);
+  if (!serverNameFromPath) {
+    return NextResponse.json(
+      { error: "nome-do-server inválido no path." },
+      { status: 400 },
+    );
+  }
+
   const url = new URL(request.url);
   const method = request.method;
+  const serverName = await ensureServerConfigExists(serverNameFromPath);
   const pathFromSlug = slug && slug.length ? `/${slug.join("/")}` : "/";
   const queryParams = toQueryObject(url.searchParams);
   const requestForBodyParsing = request.clone();
@@ -91,7 +115,7 @@ async function readRequest(request: Request, context: RouteContext) {
   }
   const headers = Object.fromEntries(request.headers);
 
-  const configured = await getRouteConfigFor(method, pathFromSlug);
+  const configured = await getRouteConfigFor(serverName, method, pathFromSlug);
   let responseStatus = configured?.status ?? 200;
   let responseHeaders = configured?.headers ?? {};
   let responseBody =
@@ -130,7 +154,21 @@ async function readRequest(request: Request, context: RouteContext) {
     }
   }
 
-  await addRequestLog({
+  // Garante que toda rota chamada exista também em configs,
+  // para continuar aparecendo na aba de rotas mesmo após limpar requests.
+  if (!configured) {
+    await setRouteConfig(serverName, {
+      method,
+      path: pathFromSlug,
+      status: 200,
+      headers: {},
+      body: { status: "ok" },
+      proxyMode: false,
+      proxyUrl: "",
+    });
+  }
+
+  await addRequestLog(serverName, {
     method,
     path: pathFromSlug,
     slug: slug ?? [],
@@ -230,4 +268,8 @@ function toQueryObject(
   }
 
   return query;
+}
+
+function normalizeServerSlug(value?: string): string {
+  return value?.trim().toLowerCase() ?? "";
 }

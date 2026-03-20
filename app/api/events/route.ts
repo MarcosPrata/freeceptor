@@ -3,10 +3,18 @@ import {
   getSnapshot,
   subscribeToChanges,
 } from "@/lib/server/request-log";
+import { getServerFromCookie } from "@/lib/server/server-session";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  const serverName = getServerFromCookie(request);
+  if (!serverName) {
+    return NextResponse.json(
+      { error: "server não autenticado." },
+      { status: 401 },
+    );
+  }
   const { signal } = request;
   const encoder = new TextEncoder();
 
@@ -18,10 +26,10 @@ export async function GET(request: Request) {
       }
 
       // envia snapshot inicial
-      send({ type: "snapshot", ...(await getSnapshot()) });
+      send({ type: "snapshot", ...(await getSnapshot(serverName)) });
 
       // assina mudanças
-      const unsubscribe = subscribeToChanges((payload) => {
+      const unsubscribe = subscribeToChanges(serverName, (payload) => {
         send({ type: "update", ...payload });
       });
 
