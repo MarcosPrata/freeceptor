@@ -10,6 +10,7 @@ type ApiRequestLog = {
   path: string;
   slug: string[];
   queryParams: Record<string, string | string[]>;
+  proxyTargetUrl?: string;
   body: unknown;
   headers: Record<string, string>;
   responseStatus: number;
@@ -32,6 +33,8 @@ type ApiRouteConfig = {
   status: number;
   body: unknown;
   headers: Record<string, string>;
+  proxyMode?: boolean;
+  proxyUrl?: string;
 };
 
 function normalizePathFront(path: string): string {
@@ -103,6 +106,32 @@ function renderKeyValueTable(data: Record<string, string | string[]>) {
   );
 }
 
+function toStringRecord(value: unknown): Record<string, string | string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const input = value as Record<string, unknown>;
+  const out: Record<string, string | string[]> = {};
+  for (const [key, raw] of Object.entries(input)) {
+    if (Array.isArray(raw)) {
+      out[key] = raw.map((item) => String(item));
+    } else if (raw == null) {
+      out[key] = "";
+    } else {
+      out[key] = String(raw);
+    }
+  }
+  return out;
+}
+
+function safeParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
 export default function Home() {
   const [logs, setLogs] = useState<ApiRequestLog[]>([]);
   const [routes, setRoutes] = useState<ApiRouteStat[]>([]);
@@ -114,6 +143,8 @@ export default function Home() {
   const [configStatus, setConfigStatus] = useState<string>("200");
   const [configBody, setConfigBody] = useState<string>("{}");
   const [configHeaders, setConfigHeaders] = useState<string>("{}");
+  const [configProxyMode, setConfigProxyMode] = useState(false);
+  const [configProxyUrl, setConfigProxyUrl] = useState("");
   const [configMessage, setConfigMessage] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
@@ -140,6 +171,8 @@ export default function Home() {
     setConfigStatus("200");
     setConfigBody("{}");
     setConfigHeaders("{}");
+    setConfigProxyMode(false);
+    setConfigProxyUrl("");
 
     try {
       const res = await fetch("/api/routes/configs");
@@ -162,6 +195,8 @@ export default function Home() {
             ? JSON.stringify(match.headers, null, 2)
             : "{}",
         );
+        setConfigProxyMode(Boolean(match.proxyMode));
+        setConfigProxyUrl(match.proxyUrl ?? "");
       }
     } catch (err) {
       console.error("Erro ao carregar config da rota:", err);
@@ -417,8 +452,13 @@ export default function Home() {
                       >
                         {log.method}
                       </span>
-                      <span className="font-mono text-[11px]">
-                        {log.slug.join(" / ") || "-"}
+                      <span className="inline-flex items-center gap-2 font-mono text-[11px]">
+                        <span>{log.slug.join(" / ") || "-"}</span>
+                        {log.proxyTargetUrl && (
+                          <span className="ml-2 inline-flex items-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-violet-500 dark:text-zinc-950">
+                            proxy mode
+                          </span>
+                        )}
                       </span>
                       {!expandedIds.includes(log.id) && (
                         <span
@@ -495,6 +535,17 @@ export default function Home() {
                                   {log.responseStatus}
                                 </span>
                               </div>
+                              {log.proxyTargetUrl && (
+                                <div className="mb-2 rounded border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200">
+                                  <div>
+                                    <span className="font-semibold">Proxy mode habilitado</span>
+                                    <span>, esses dados foram respondidos por:</span>
+                                  </div>
+                                  <div className="mt-2 break-all font-mono text-[11px] font-semibold">
+                                    {log.proxyTargetUrl}
+                                  </div>
+                                </div>
+                              )}
                               <div className="grid gap-3 md:grid-cols-2">
                                 <div>
                                   <div className="mb-1 text-[11px] text-zinc-500">
@@ -538,231 +589,250 @@ export default function Home() {
                 )}
               </div>
             ) : (
-              <table className="min-w-full border-separate border-spacing-0">
-                <thead className="sticky top-0 bg-zinc-50 text-[11px] uppercase tracking-wide text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
-                  <tr>
-                    <th className="border-b border-zinc-200 px-3 py-2 text-left dark:border-zinc-800">
-                      Método
-                    </th>
-                    <th className="border-b border-zinc-200 px-3 py-2 text-left dark:border-zinc-800">
-                      Path
-                    </th>
-                    <th className="border-b border-zinc-200 px-3 py-2 text-left dark:border-zinc-800">
-                      Chamadas
-                    </th>
-                    <th className="border-b border-zinc-200 px-3 py-2 text-left dark:border-zinc-800">
-                      Última chamada
-                    </th>
-                    <th className="border-b border-zinc-200 px-3 py-2 text-right dark:border-zinc-800">
-                      Configurar resposta
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {routes.map((route) => (
-                    <React.Fragment key={route.id}>
-                      <tr
-                        className="border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900/60"
+              <div className="space-y-3 p-3">
+                {routes.map((route) => (
+                  <div
+                    key={route.id}
+                    className="rounded-md border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
+                  >
+                    <div
+                      className="grid cursor-pointer grid-cols-[auto_1fr_auto_auto_auto] items-center gap-3 px-3 py-2"
+                      onClick={() => {
+                        void openRouteConfig(route);
+                      }}
+                    >
+                      <span
+                        className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                        style={{
+                          backgroundColor:
+                            route.method === "GET"
+                              ? "rgba(59,130,246,0.1)"
+                              : route.method === "POST"
+                                ? "rgba(16,185,129,0.1)"
+                                : "rgba(148,163,184,0.1)",
+                          color:
+                            route.method === "GET"
+                              ? "#1d4ed8"
+                              : route.method === "POST"
+                                ? "#047857"
+                                : "#334155",
+                        }}
                       >
-                        <td className="px-3 py-2 align-top">
-                          <span
-                            className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold"
-                            style={{
-                              backgroundColor:
-                                route.method === "GET"
-                                  ? "rgba(59,130,246,0.1)"
-                                  : route.method === "POST"
-                                    ? "rgba(16,185,129,0.1)"
-                                    : "rgba(148,163,184,0.1)",
-                              color:
-                                route.method === "GET"
-                                  ? "#1d4ed8"
-                                  : route.method === "POST"
-                                    ? "#047857"
-                                    : "#334155",
-                            }}
-                          >
-                            {route.method}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 align-top font-mono text-[11px]">
-                          {route.path
-                            .replace(/^\/api/, "")
-                            .split("/")
-                            .filter(Boolean)
-                            .join(" / ") || "-"}
-                        </td>
-                        <td className="px-3 py-2 align-top text-xs">
-                          {route.count}
-                        </td>
-                        <td className="px-3 py-2 align-top font-mono text-[11px]">
-                          {new Date(route.lastTimestamp).toLocaleTimeString()}
-                        </td>
-                        <td className="px-3 py-2 align-top text-right">
-                          <div className="inline-flex items-center gap-2">
-                            <button
-                              type="button"
-                              className="inline-flex items-center gap-1 rounded border border-zinc-300 px-2 py-1 text-[10px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                              onClick={() => {
-                                void openRouteConfig(route);
-                              }}
-                            >
-                              Configurar
-                            </button>
-                            <button
-                              type="button"
-                              aria-label="Remover configuração desta rota"
-                              className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-300 text-[11px] text-zinc-600 hover:bg-red-50 hover:text-red-700 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-red-900/40 dark:hover:text-red-200"
-                              onClick={async () => {
-                                try {
-                                  await fetch("/api/routes", {
-                                    method: "DELETE",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({
-                                      method: route.method,
-                                      path: route.path,
-                                    }),
-                                  });
-                                  if (configRouteId === route.id) {
-                                    setConfigRouteId(null);
-                                    setConfigMessage(null);
-                                  }
-                                } catch (err) {
-                                  console.error(
-                                    "Erro ao remover configuração da rota:",
-                                    err,
-                                  );
-                                }
-                              }}
-                            >
-                              🗑
-                            </button>
+                        {route.method}
+                      </span>
+                      <span className="font-mono text-[11px]">
+                        {route.path.replace(/^\/api/, "").split("/").filter(Boolean).join(" / ") ||
+                          "-"}
+                      </span>
+                      <span className="text-[11px] text-zinc-600 dark:text-zinc-300">
+                        chamadas: {route.count}
+                      </span>
+                      <span className="font-mono text-[11px] text-zinc-600 dark:text-zinc-300">
+                        {route.lastTimestamp
+                          ? new Date(route.lastTimestamp).toLocaleTimeString()
+                          : "-"}
+                      </span>
+                      <div className="inline-flex items-center gap-2">
+                        <button
+                          type="button"
+                          aria-label="Remover configuração desta rota"
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-300 text-[11px] text-zinc-600 hover:bg-red-50 hover:text-red-700 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-red-900/40 dark:hover:text-red-200"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              const res = await fetch("/api/routes", {
+                                method: "DELETE",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  method: route.method,
+                                  path: route.path,
+                                }),
+                              });
+
+                              if (!res.ok) {
+                                const text = await res.text();
+                                throw new Error(text);
+                              }
+
+                              const payload = (await res.json()) as { ok: boolean };
+
+                              // mantém o card aberto com feedback e campos resetados
+                              setConfigRouteId(route.id);
+                              setConfigStatus("200");
+                              setConfigBody("{}");
+                              setConfigHeaders("{}");
+                              setConfigProxyMode(false);
+                              setConfigProxyUrl("");
+                              setConfigMessage(
+                                payload.ok
+                                  ? "Configuração removida com sucesso."
+                                  : "Essa rota não possui configuração salva.",
+                              );
+                            } catch (err) {
+                              console.error(
+                                "Erro ao remover configuração da rota:",
+                                err,
+                              );
+                              setConfigRouteId(route.id);
+                              setConfigMessage(
+                                err instanceof Error
+                                  ? `Erro ao remover configuração: ${err.message}`
+                                  : "Erro ao remover configuração",
+                              );
+                            }
+                          }}
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    </div>
+
+                    {configRouteId === route.id && (
+                      <div className="border-t border-zinc-100 bg-zinc-50 px-3 py-3 text-[11px] text-zinc-700 dark:border-zinc-900 dark:bg-zinc-900 dark:text-zinc-200">
+                        <form
+                          className="flex flex-col gap-2"
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            setConfigMessage(null);
+                            try {
+                              if (configProxyMode && !configProxyUrl.trim()) {
+                                throw new Error(
+                                  "Informe a URL do proxy ou desative o proxy mode.",
+                                );
+                              }
+                              const statusNumber = Number(configStatus) || 200;
+                              const parsedBody = configBody ? JSON.parse(configBody) : null;
+                              const parsedHeaders = configHeaders
+                                ? JSON.parse(configHeaders)
+                                : {};
+
+                              const res = await fetch("/api/routes", {
+                                method: "POST",
+                                headers: {
+                                  "Content-Type": "application/json",
+                                },
+                                body: JSON.stringify({
+                                  method: route.method,
+                                  path: route.path,
+                                  status: statusNumber,
+                                  headers: parsedHeaders,
+                                  responseBody: parsedBody,
+                                  proxyMode: configProxyMode,
+                                  proxyUrl: configProxyUrl.trim(),
+                                }),
+                              });
+
+                              if (!res.ok) {
+                                const text = await res.text();
+                                throw new Error(text);
+                              }
+
+                              setConfigMessage(
+                                "Configuração salva. As próximas chamadas dessa rota usarão essa resposta.",
+                              );
+                            } catch (err) {
+                              setConfigMessage(
+                                err instanceof Error
+                                  ? `Erro ao salvar configuração: ${err.message}`
+                                  : "Erro ao salvar configuração",
+                              );
+                            }
+                          }}
+                        >
+                          <div className="mb-1 flex flex-wrap items-center gap-2">
+                            <label className="inline-flex items-center gap-2 text-[11px] text-zinc-700 dark:text-zinc-200">
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5"
+                                checked={configProxyMode}
+                                onChange={(e) => setConfigProxyMode(e.target.checked)}
+                              />
+                              <span>Habilitar proxy mode</span>
+                            </label>
+                            {configProxyMode && (
+                              <input
+                                type="url"
+                                placeholder="https://api.exemplo.com/endpoint"
+                                className="h-7 min-w-72 flex-1 rounded border border-zinc-300 bg-white px-2 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                value={configProxyUrl}
+                                onChange={(e) => setConfigProxyUrl(e.target.value)}
+                              />
+                            )}
                           </div>
-                        </td>
-                      </tr>
-                      {configRouteId === route.id && (
-                        <tr>
-                          <td
-                            colSpan={5}
-                            className="border-b border-zinc-100 bg-zinc-50 px-3 py-3 text-[11px] text-zinc-700 dark:border-zinc-900 dark:bg-zinc-900 dark:text-zinc-200"
-                          >
-                            <form
-                              className="flex flex-col gap-2"
-                              onSubmit={async (e) => {
-                                e.preventDefault();
-                                setConfigMessage(null);
-                                try {
-                                  const statusNumber = Number(configStatus) || 200;
-                                  const parsedBody = configBody
-                                    ? JSON.parse(configBody)
-                                    : null;
-                                  const parsedHeaders = configHeaders
-                                    ? JSON.parse(configHeaders)
-                                    : {};
-
-                                  const res = await fetch("/api/routes", {
-                                    method: "POST",
-                                    headers: {
-                                      "Content-Type": "application/json",
-                                    },
-                                    body: JSON.stringify({
-                                      method: route.method,
-                                      path: route.path,
-                                      status: statusNumber,
-                                      headers: parsedHeaders,
-                                      responseBody: parsedBody,
-                                    }),
-                                  });
-
-                                  if (!res.ok) {
-                                    const text = await res.text();
-                                    throw new Error(text);
-                                  }
-
-                                  setConfigMessage(
-                                    "Configuração salva. As próximas chamadas dessa rota usarão essa resposta.",
-                                  );
-                                } catch (err) {
-                                  setConfigMessage(
-                                    err instanceof Error
-                                      ? `Erro ao salvar configuração: ${err.message}`
-                                      : "Erro ao salvar configuração",
-                                  );
-                                }
-                              }}
-                            >
-                              <div className="flex flex-wrap gap-2">
-                                <label className="flex items-center gap-1 text-[11px]">
-                                  <span className="text-zinc-500">Status</span>
-                                  <input
-                                    type="number"
-                                    min={100}
-                                    max={599}
-                                    className="h-6 w-16 rounded border border-zinc-300 bg-white px-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                    value={configStatus}
-                                    onChange={(e) => setConfigStatus(e.target.value)}
-                                  />
-                                </label>
-                              </div>
-                              <div className="grid gap-2 md:grid-cols-2">
-                                <label className="flex flex-col gap-1">
-                                  <span className="text-[11px] text-zinc-500">
-                                    Body (JSON)
-                                  </span>
-                                  <textarea
-                                    rows={4}
-                                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                    value={configBody}
-                                    onChange={(e) => setConfigBody(e.target.value)}
-                                  />
-                                </label>
-                                <label className="flex flex-col gap-1">
-                                  <span className="text-[11px] text-zinc-500">
-                                    Cabeçalhos (JSON)
-                                  </span>
-                                  <textarea
-                                    rows={4}
-                                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                    value={configHeaders}
-                                    onChange={(e) => setConfigHeaders(e.target.value)}
-                                  />
-                                </label>
-                              </div>
-                              <div className="flex items-center justify-between gap-2">
-                                <button
-                                  type="submit"
-                                  className="inline-flex items-center rounded bg-zinc-900 px-3 py-1 text-[11px] font-medium text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-                                >
-                                  Salvar configuração
-                                </button>
-                                {configMessage && (
-                                  <span className="text-[11px] text-zinc-500">
-                                    {configMessage}
-                                  </span>
+                          <div className="flex flex-wrap gap-2">
+                            <label className="flex items-center gap-1 text-[11px]">
+                              <span className="text-zinc-500">Status</span>
+                              <input
+                                type="number"
+                                min={100}
+                                max={599}
+                                className="h-6 w-16 rounded border border-zinc-300 bg-white px-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                value={configStatus}
+                                onChange={(e) => setConfigStatus(e.target.value)}
+                                disabled={configProxyMode}
+                              />
+                            </label>
+                          </div>
+                          <div className="grid gap-2 md:grid-cols-2">
+                            <label className="flex flex-col gap-1">
+                              <span className="text-[11px] text-zinc-500">Body (JSON)</span>
+                              <textarea
+                                rows={6}
+                                className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                value={configBody}
+                                onChange={(e) => setConfigBody(e.target.value)}
+                                disabled={configProxyMode}
+                              />
+                            </label>
+                            <div className="flex flex-col gap-1">
+                              <label className="flex flex-col gap-1">
+                                <span className="text-[11px] text-zinc-500">Cabeçalhos (JSON)</span>
+                                <textarea
+                                  rows={4}
+                                  className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                  value={configHeaders}
+                                  onChange={(e) => setConfigHeaders(e.target.value)}
+                                  disabled={configProxyMode}
+                                />
+                              </label>
+                              <div>
+                                <span className="mb-1 block text-[11px] text-zinc-500">
+                                  Cabeçalhos (tabela)
+                                </span>
+                                {renderKeyValueTable(
+                                  toStringRecord(safeParseJson(configHeaders || "{}")),
                                 )}
                               </div>
-                            </form>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  ))}
-                  {!loading && routes.length === 0 && (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        className="px-3 py-6 text-center text-xs text-zinc-500"
-                      >
-                        Nenhuma rota registrada ainda. Faça uma chamada para
-                        <code className="mx-1 rounded bg-zinc-100 px-1 py-0.5 font-mono text-[11px] dark:bg-zinc-900">
-                          /api/alguma/coisa
-                        </code>
-                        e veja aparecer aqui.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <button
+                              type="submit"
+                              className="inline-flex items-center rounded bg-zinc-900 px-3 py-1 text-[11px] font-medium text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                            >
+                              Salvar configuração
+                            </button>
+                            {configMessage && (
+                              <span className="text-[11px] text-zinc-500">
+                                {configMessage}
+                              </span>
+                            )}
+                          </div>
+                        </form>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {!loading && routes.length === 0 && (
+                  <div className="rounded border border-dashed border-zinc-300 px-3 py-6 text-center text-xs text-zinc-500 dark:border-zinc-700">
+                    Nenhuma rota registrada ainda. Faça uma chamada para
+                    <code className="mx-1 rounded bg-zinc-100 px-1 py-0.5 font-mono text-[11px] dark:bg-zinc-900">
+                      /api/alguma/coisa
+                    </code>
+                    e veja aparecer aqui.
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </section>

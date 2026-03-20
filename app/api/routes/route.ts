@@ -18,12 +18,14 @@ export async function GETConfigs() {
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { method, path, status, headers, responseBody } = body as {
+  const { method, path, status, headers, responseBody, proxyMode, proxyUrl } = body as {
     method: string;
     path: string;
     status?: number;
     headers?: Record<string, string>;
     responseBody?: unknown;
+    proxyMode?: boolean;
+    proxyUrl?: string;
   };
 
   if (!method || !path) {
@@ -39,6 +41,8 @@ export async function POST(request: Request) {
     status: status ?? 200,
     headers: headers ?? {},
     body: responseBody ?? null,
+    proxyMode: Boolean(proxyMode),
+    proxyUrl: proxyUrl?.trim() ?? "",
   });
 
   return NextResponse.json(config);

@@ -10,6 +10,7 @@ export type ApiRequestLog = {
   path: string;
   slug: string[];
   queryParams: Record<string, string | string[]>;
+  proxyTargetUrl?: string;
   body: unknown;
   headers: Record<string, string>;
   responseStatus: number;
@@ -134,6 +135,8 @@ export type ApiRouteConfig = {
   status: number;
   body: unknown;
   headers: Record<string, string>;
+  proxyMode?: boolean;
+  proxyUrl?: string;
 };
 
 const routeConfigs = new Map<string, ApiRouteConfig>();
@@ -151,6 +154,8 @@ export function setRouteConfig(config: ApiRouteConfig): ApiRouteConfig {
     path: normalizedPath,
     status: config.status || 200,
     headers: config.headers ?? {},
+    proxyMode: Boolean(config.proxyMode),
+    proxyUrl: config.proxyUrl?.trim() ?? "",
   };
   routeConfigs.set(key, normalized);
   notifyChange();
