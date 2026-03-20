@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 type ApiRequestLog = {
@@ -148,8 +148,10 @@ export default function Home() {
   const [configMessage, setConfigMessage] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
+  const [importFileName, setImportFileName] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const importFileInputRef = useRef<HTMLInputElement | null>(null);
 
   function toggleLogExpanded(id: number) {
     setExpandedIds((prev) =>
@@ -202,6 +204,13 @@ export default function Home() {
       console.error("Erro ao carregar config da rota:", err);
       // mantém os valores padrão, mas não quebra a UI
     }
+  }
+
+  async function readImportFile(file: File) {
+    const raw = await file.text();
+    const parsed = JSON.parse(raw);
+    setImportText(JSON.stringify(parsed, null, 2));
+    setImportFileName(file.name);
   }
 
   useEffect(() => {
@@ -333,6 +342,7 @@ export default function Home() {
                       onClick={() => {
                         setImportError(null);
                         setImportText("");
+                        setImportFileName(null);
                         setImportOpen(true);
                       }}
                     >
@@ -360,7 +370,22 @@ export default function Home() {
                       }
                     }}
                   >
-                    🗑
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M3 6h18" />
+                      <path d="M8 6V4h8v2" />
+                      <path d="M6 6l1 14h10l1-14" />
+                      <path d="M10 10v7" />
+                      <path d="M14 10v7" />
+                    </svg>
                   </button>
                   <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
                     Limpar requisições
@@ -389,7 +414,7 @@ export default function Home() {
                     : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
                 }`}
               >
-                Responses
+                Rotas
               </button>
             </div>
           </div>
@@ -682,7 +707,22 @@ export default function Home() {
                             }
                           }}
                         >
-                          🗑
+                          <svg
+                            viewBox="0 0 24 24"
+                            className="h-3.5 w-3.5"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M3 6h18" />
+                            <path d="M8 6V4h8v2" />
+                            <path d="M6 6l1 14h10l1-14" />
+                            <path d="M10 10v7" />
+                            <path d="M14 10v7" />
+                          </svg>
                         </button>
                       </div>
                     </div>
@@ -856,7 +896,7 @@ export default function Home() {
                   Importar configurações de rotas
                 </h2>
                 <p className="text-xs text-zinc-600 dark:text-zinc-400">
-                  Cole o JSON exportado ou arraste um arquivo
+                  Arraste um arquivo de configuração ou procure no computador
                   <code className="mx-1 rounded bg-zinc-100 px-1 py-[1px] font-mono text-[10px] dark:bg-zinc-900">
                     .json
                   </code>
@@ -876,37 +916,66 @@ export default function Home() {
               </button>
             </div>
 
-            <div
-              className="mb-3 flex h-64 cursor-pointer flex-col overflow-auto rounded-md border border-dashed border-zinc-300 bg-zinc-50 px-3 py-2 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-              onDragOver={(e) => {
-                e.preventDefault();
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                if (e.dataTransfer.files?.[0]) {
-                  const file = e.dataTransfer.files[0];
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    const raw = typeof reader.result === "string" ? reader.result : "";
-                    // tenta formatar o JSON para ficar mais legível no textarea
-                    try {
-                      const parsed = JSON.parse(raw);
-                      setImportText(JSON.stringify(parsed, null, 2));
-                    } catch {
-                      setImportText(raw);
+            <div className="mb-3 grid gap-3 md:grid-cols-2">
+              <div
+                className="flex h-56 cursor-default flex-col items-center justify-center rounded-md border border-dashed border-zinc-300 bg-zinc-50 px-3 py-2 text-center text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                }}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  try {
+                    setImportError(null);
+                    if (e.dataTransfer.files?.[0]) {
+                      await readImportFile(e.dataTransfer.files[0]);
                     }
-                  };
-                  reader.readAsText(file);
-                }
-              }}
-            >
-              <textarea
-                className="h-full w-full resize-none border-none bg-transparent font-mono text-[11px] outline-none"
-                placeholder='Cole aqui um array de configs, ex.: [{"method":"POST","path":"/api/...","status":200,"body":{...},"headers":{...}}]'
-                value={importText}
-                onChange={(e) => setImportText(e.target.value)}
+                  } catch {
+                    setImportError("Arquivo inválido. Envie um JSON de configuração válido.");
+                  }
+                }}
+              >
+                <span className="mb-2 text-2xl leading-none">↑</span>
+                <span className="text-[11px] font-medium">
+                  Arraste um arquivo de configuração aqui
+                </span>
+              </div>
+              <button
+                type="button"
+                className="flex h-56 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-zinc-300 bg-zinc-50 px-3 py-2 text-center text-xs text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                onClick={() => importFileInputRef.current?.click()}
+              >
+                <span className="mb-2 text-2xl leading-none">⌕</span>
+                <span className="text-[11px] font-medium">
+                  Clique aqui para selecionar do computador
+                </span>
+              </button>
+              <input
+                ref={importFileInputRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={async (e) => {
+                  try {
+                    setImportError(null);
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    await readImportFile(file);
+                  } catch {
+                    setImportError("Arquivo inválido. Envie um JSON de configuração válido.");
+                  } finally {
+                    if (importFileInputRef.current) {
+                      importFileInputRef.current.value = "";
+                    }
+                  }
+                }}
               />
             </div>
+
+            {importFileName && (
+              <div className="mb-2 rounded-md bg-zinc-100 px-3 py-1.5 text-xs text-zinc-700 dark:bg-zinc-900 dark:text-zinc-200">
+                Arquivo selecionado: <span className="font-mono">{importFileName}</span>
+              </div>
+            )}
 
             {importError && (
               <div className="mb-2 rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-200">
@@ -939,7 +1008,9 @@ export default function Home() {
                       setImportError(null);
                       setImporting(true);
                       if (!importText.trim()) {
-                        throw new Error("Cole o JSON ou arraste um arquivo primeiro.");
+                        throw new Error(
+                          "Arraste um arquivo JSON ou procure no computador primeiro.",
+                        );
                       }
                       const parsed = JSON.parse(importText) as
                         | ApiRouteConfig[]
