@@ -148,6 +148,23 @@ function buildServerPath(serverName: string): string {
   return `/server/${encodeURIComponent(serverName)}`;
 }
 
+function stripServerPrefixFromSlug(slug: string[], serverName: string): string[] {
+  if (!slug.length) return slug;
+  if (normalizeServerName(slug[0]) === normalizeServerName(serverName)) {
+    return slug.slice(1);
+  }
+  return slug;
+}
+
+function stripServerPrefixFromRoutePath(path: string, serverName: string): string {
+  const clean = path.replace(/^\/api/, "");
+  const parts = clean.split("/").filter(Boolean);
+  if (parts.length && normalizeServerName(parts[0]) === normalizeServerName(serverName)) {
+    return `/${parts.slice(1).join("/")}`;
+  }
+  return clean || "/";
+}
+
 export default function Home() {
   const [sessionReady, setSessionReady] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
@@ -705,7 +722,11 @@ export default function Home() {
                         {log.method}
                       </span>
                       <span className="inline-flex items-center gap-2 font-mono text-[11px]">
-                        <span>{log.slug.join(" / ") || "-"}</span>
+                        <span>
+                          {stripServerPrefixFromSlug(log.slug, currentServerName).join(
+                            " / ",
+                          ) || "-"}
+                        </span>
                         {log.proxyTargetUrl && (
                           <span className="ml-2 inline-flex items-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-violet-500 dark:text-zinc-950">
                             proxy mode
@@ -873,8 +894,13 @@ export default function Home() {
                         {route.method}
                       </span>
                       <span className="font-mono text-[11px]">
-                        {route.path.replace(/^\/api/, "").split("/").filter(Boolean).join(" / ") ||
-                          "-"}
+                        {stripServerPrefixFromRoutePath(
+                          route.path,
+                          currentServerName,
+                        )
+                          .split("/")
+                          .filter(Boolean)
+                          .join(" / ") || "-"}
                       </span>
                       <span className="text-[11px] text-zinc-600 dark:text-zinc-300">
                         chamadas: {route.count}
