@@ -8,6 +8,7 @@ export type ApiRequestLog = {
   slug: string[];
   queryParams: Record<string, string | string[]>;
   proxyTargetUrl?: string;
+  proxyResolvedUrl?: string;
   body: unknown;
   headers: Record<string, string>;
   responseStatus: number;
@@ -147,6 +148,7 @@ export async function getRequestLogs(serverName: string): Promise<ApiRequestLog[
           slug: 1,
           queryParams: 1,
           proxyTargetUrl: 1,
+          proxyResolvedUrl: 1,
           body: 1,
           headers: 1,
           responseStatus: 1,
@@ -168,6 +170,7 @@ export async function getRequestLogs(serverName: string): Promise<ApiRequestLog[
       slug: doc.slug ?? [],
       queryParams: doc.queryParams ?? {},
       proxyTargetUrl: doc.proxyTargetUrl,
+      proxyResolvedUrl: doc.proxyResolvedUrl,
       body: doc.body ?? null,
       headers: doc.headers ?? {},
       responseStatus: doc.responseStatus ?? 200,

@@ -11,6 +11,7 @@ type ApiRequestLog = {
   slug: string[];
   queryParams: Record<string, string | string[]>;
   proxyTargetUrl?: string;
+  proxyResolvedUrl?: string;
   body: unknown;
   headers: Record<string, string>;
   responseStatus: number;
@@ -351,9 +352,12 @@ export default function Home() {
   useEffect(() => {
     if (!authenticated) return;
     let cancelled = false;
+    let es: EventSource | null = null;
+    let reconnectTimer: number | null = null;
+    let reconnectAttempt = 0;
 
     // primeiro snapshot via HTTP, para fallback rápido
-    async function initialLoad() {
+    async function loadSnapshot() {
       try {
         const [logsRes, routesRes] = await Promise.all([
           fetch("/api/logs"),
@@ -379,35 +383,66 @@ export default function Home() {
       }
     }
 
-    initialLoad();
+    loadSnapshot();
 
-    const es = new EventSource("/api/events");
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          logs: ApiRequestLog[];
-          routes: ApiRouteStat[];
-        };
+    function connectSse() {
+      if (cancelled) return;
+      es = new EventSource("/api/events");
+
+      es.onopen = () => {
+        reconnectAttempt = 0;
         if (!cancelled) {
-          setLogs(data.logs);
-          setRoutes(data.routes);
-          setLoading(false);
+          setError(null);
         }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
+      };
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as {
+            type?: string;
+            logs?: ApiRequestLog[];
+            routes?: ApiRouteStat[];
+          };
+          // ignora mensagens sem payload de snapshot/update
+          if (!data.logs || !data.routes) return;
+          if (!cancelled) {
+            setLogs(data.logs);
+            setRoutes(data.routes);
+            setLoading(false);
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setError(err instanceof Error ? err.message : String(err));
+          }
         }
-      }
-    };
-    es.onerror = () => {
-      if (!cancelled) {
-        setError("Conexão com /api/events perdida. Tentando reconectar...");
-      }
-    };
+      };
+
+      es.onerror = () => {
+        if (cancelled) return;
+        es?.close();
+        es = null;
+        const delay = Math.min(1000 * 2 ** reconnectAttempt, 10000);
+        reconnectAttempt += 1;
+        setError(
+          `Conexão com /api/events perdida. Tentando reconectar em ${Math.round(
+            delay / 1000,
+          )}s...`,
+        );
+        reconnectTimer = window.setTimeout(() => {
+          void loadSnapshot();
+          connectSse();
+        }, delay);
+      };
+    }
+
+    connectSse();
 
     return () => {
       cancelled = true;
-      es.close();
+      es?.close();
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+      }
     };
   }, [authenticated]);
 
@@ -815,7 +850,7 @@ export default function Home() {
                                     <span>, esses dados foram respondidos por:</span>
                                   </div>
                                   <div className="mt-2 break-all font-mono text-[11px] font-semibold">
-                                    {log.proxyTargetUrl}
+                                    {log.proxyResolvedUrl ?? log.proxyTargetUrl}
                                   </div>
                                 </div>
                               )}

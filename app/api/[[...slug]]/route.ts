@@ -121,6 +121,7 @@ async function readRequest(request: Request, context: RouteContext) {
   let responseBody = configured?.body ?? ({ status: "ok" } as unknown);
 
   let proxyRawResponseBody: ArrayBuffer | null = null;
+  let proxyResolvedUrl: string | undefined;
 
   if (configured?.proxyMode && configured.proxyUrl) {
     try {
@@ -128,6 +129,7 @@ async function readRequest(request: Request, context: RouteContext) {
         originalRequest: request,
         targetUrl: configured.proxyUrl,
         incomingUrl: url,
+        serverName,
         rawRequestBody,
       });
 
@@ -135,6 +137,7 @@ async function readRequest(request: Request, context: RouteContext) {
       responseHeaders = proxied.headers;
       responseBody = proxied.body;
       proxyRawResponseBody = proxied.rawBody;
+      proxyResolvedUrl = proxied.resolvedUrl;
     } catch (error) {
       responseStatus = 502;
       responseHeaders = {};
@@ -166,6 +169,7 @@ async function readRequest(request: Request, context: RouteContext) {
     queryParams,
     proxyTargetUrl:
       configured?.proxyMode && configured.proxyUrl ? configured.proxyUrl : undefined,
+    proxyResolvedUrl,
     body,
     headers,
     responseStatus,
@@ -190,14 +194,18 @@ async function proxyRequest({
   originalRequest,
   targetUrl,
   incomingUrl,
+  serverName,
   rawRequestBody,
 }: {
   originalRequest: Request;
   targetUrl: string;
   incomingUrl: URL;
+  serverName: string;
   rawRequestBody: ArrayBuffer;
 }) {
   const proxyUrl = new URL(targetUrl);
+  const appendedPath = extractAppendedPath(incomingUrl.pathname, serverName);
+  proxyUrl.pathname = joinPaths(proxyUrl.pathname, appendedPath);
   for (const [key, value] of incomingUrl.searchParams.entries()) {
     proxyUrl.searchParams.append(key, value);
   }
@@ -223,6 +231,7 @@ async function proxyRequest({
     headers: proxiedHeaders,
     body: proxiedBody,
     rawBody,
+    resolvedUrl: proxyUrl.toString(),
   };
 }
 
@@ -263,4 +272,19 @@ function toQueryObject(
 
 function normalizeServerSlug(value?: string): string {
   return value?.trim().toLowerCase() ?? "";
+}
+
+function extractAppendedPath(pathname: string, serverName: string): string {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] !== "api") return pathname;
+  if (parts[1] !== serverName) return `/${parts.slice(1).join("/")}`;
+  return `/${parts.slice(2).join("/")}`;
+}
+
+function joinPaths(basePath: string, appendedPath: string): string {
+  const base = basePath.endsWith("/") ? basePath.slice(0, -1) : basePath;
+  const append = appendedPath.startsWith("/") ? appendedPath : `/${appendedPath}`;
+  if (!append || append === "/") return base || "/";
+  if (!base || base === "/") return append;
+  return `${base}${append}`;
 }
