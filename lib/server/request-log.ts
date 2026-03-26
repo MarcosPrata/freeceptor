@@ -41,7 +41,6 @@ type LogDoc = {
 } & Omit<ApiRequestLog, "id">;
 
 type RouteConfigDoc = {
-  _id: string;
   serverName: string;
 } & ApiRouteConfig;
 
@@ -266,10 +265,13 @@ export async function setRouteConfig(
 ): Promise<ApiRouteConfig> {
   const collection = await routeConfigsCollection();
   const normalized = mapConfig(config);
-  const key = configKey(normalized.method, normalized.path);
 
   await collection.updateOne(
-    { _id: key, serverName },
+    {
+      serverName,
+      method: normalized.method,
+      path: normalized.path,
+    },
     {
       $set: {
         serverName,
@@ -295,8 +297,11 @@ export async function getRouteConfigFor(
   path: string,
 ): Promise<ApiRouteConfig | undefined> {
   const collection = await routeConfigsCollection();
-  const key = configKey(method, normalizePath(path));
-  const doc = await collection.findOne({ _id: key, serverName });
+  const doc = await collection.findOne({
+    serverName,
+    method: method.toUpperCase(),
+    path: normalizePath(path),
+  });
   if (!doc) return undefined;
   return mapConfig(doc);
 }
@@ -315,8 +320,11 @@ export async function deleteRouteConfig(
   path: string,
 ): Promise<boolean> {
   const collection = await routeConfigsCollection();
-  const key = configKey(method, normalizePath(path));
-  const result = await collection.deleteOne({ _id: key, serverName });
+  const result = await collection.deleteOne({
+    serverName,
+    method: method.toUpperCase(),
+    path: normalizePath(path),
+  });
   if (result.deletedCount) {
     await notifyChange();
   }

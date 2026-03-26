@@ -1305,6 +1305,11 @@ export default function Home() {
                         | ApiRouteConfig;
                       const configs = Array.isArray(parsed) ? parsed : [parsed];
                       for (const cfg of configs) {
+                        if (!cfg.method || !cfg.path) {
+                          throw new Error(
+                            "JSON inválido: cada item precisa de method e path.",
+                          );
+                        }
                         const res = await fetch("/api/routes", {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
@@ -1314,6 +1319,8 @@ export default function Home() {
                             status: cfg.status,
                             headers: cfg.headers ?? {},
                             responseBody: cfg.body ?? null,
+                            proxyMode: Boolean(cfg.proxyMode),
+                            proxyUrl: cfg.proxyUrl ?? "",
                           }),
                         });
                         if (!res.ok) {
