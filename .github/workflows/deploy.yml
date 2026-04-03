@@ -1,66 +1,30 @@
-# CD — deploy manual: só roda quando você dispara na aba Actions (Run workflow).
-# O job "assert-ci-green" garante que o CI já passou para o commit em questão.
+# CD — dispara sozinho quando o workflow "CI" termina com sucesso em main.
+# O job "Deploy" usa o environment "production": ele só executa depois que alguém
+# aprovar em Actions (Settings → Environments → production → Required reviewers).
 
 name: CD
 
 on:
-  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
-  assert-ci-green:
-    name: Verificar CI
-    runs-on: ubuntu-latest
-    steps:
-      - name: Garantir que o CI passou neste commit
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const workflowId = "ci.yml";
-            const branch = context.ref.replace("refs/heads/", "");
-            const sha = context.sha;
-
-            const { data } = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: workflowId,
-              branch,
-              per_page: 20,
-            });
-
-            const run = data.workflow_runs.find((r) => r.head_sha === sha);
-            if (!run) {
-              core.setFailed(
-                `Nenhuma execução do workflow CI encontrada para o commit ${sha} na branch "${branch}". Rode o CI antes de fazer deploy.`,
-              );
-              return;
-            }
-            if (run.status !== "completed") {
-              core.setFailed(
-                `CI ainda não terminou para este commit (status: ${run.status}). Aguarde o CI concluir: ${run.html_url}`,
-              );
-              return;
-            }
-            if (run.conclusion !== "success") {
-              core.setFailed(
-                `CI não passou para este commit (conclusão: ${run.conclusion}). Veja: ${run.html_url}`,
-              );
-              return;
-            }
-            core.info(`CI OK: run ${run.id} — ${run.html_url}`);
-
   deploy:
     name: Deploy
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
-    needs: assert-ci-green
+    environment: production
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Deploy
         run: |
-          echo "Deploying ${{ github.ref_name }} @ ${{ github.sha }}..."
+          echo "Deploying ${{ github.event.workflow_run.head_branch }} @ ${{ github.event.workflow_run.head_sha }}..."
           echo "Substitua este passo pelo seu deploy real (Vercel, AWS, etc.)."
