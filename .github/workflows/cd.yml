@@ -2,7 +2,7 @@
 # O job "Deploy" usa o environment "production": ele só executa depois que alguém
 # aprovar em Actions (Settings → Environments → production → Required reviewers).
 
-name: CD
+name: 🚀 CD
 
 on:
   workflow_run:
