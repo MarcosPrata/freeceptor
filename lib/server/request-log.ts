@@ -9,6 +9,9 @@ export type ApiRequestLog = {
   queryParams: Record<string, string | string[]>;
   proxyTargetUrl?: string;
   proxyResolvedUrl?: string;
+  proxyClientId?: string;
+  proxyClientName?: string;
+  proxyServiceName?: string;
   body: unknown;
   headers: Record<string, string>;
   responseStatus: number;
@@ -25,6 +28,8 @@ export type ApiRouteStat = {
   lastTimestamp: string;
 };
 
+export type ProxyMode = "disabled" | "url" | "client";
+
 export type ApiRouteConfig = {
   method: string;
   path: string;
@@ -33,6 +38,9 @@ export type ApiRouteConfig = {
   headers: Record<string, string>;
   proxyMode?: boolean;
   proxyUrl?: string;
+  proxyToClient?: boolean;
+  proxyClientId?: string;
+  proxyServiceName?: string;
 };
 
 type LogDoc = {
@@ -97,6 +105,9 @@ function mapConfig(config: ApiRouteConfig | RouteConfigDoc): ApiRouteConfig {
     headers: config.headers ?? {},
     proxyMode: Boolean(config.proxyMode),
     proxyUrl: config.proxyUrl?.trim() ?? "",
+    proxyToClient: Boolean(config.proxyToClient),
+    proxyClientId: config.proxyClientId?.trim() ?? "",
+    proxyServiceName: config.proxyServiceName?.trim() ?? "",
   };
 }
 
@@ -148,6 +159,9 @@ export async function getRequestLogs(serverName: string): Promise<ApiRequestLog[
           queryParams: 1,
           proxyTargetUrl: 1,
           proxyResolvedUrl: 1,
+          proxyClientId: 1,
+          proxyClientName: 1,
+          proxyServiceName: 1,
           body: 1,
           headers: 1,
           responseStatus: 1,
@@ -170,6 +184,9 @@ export async function getRequestLogs(serverName: string): Promise<ApiRequestLog[
       queryParams: doc.queryParams ?? {},
       proxyTargetUrl: doc.proxyTargetUrl,
       proxyResolvedUrl: doc.proxyResolvedUrl,
+      proxyClientId: doc.proxyClientId,
+      proxyClientName: doc.proxyClientName,
+      proxyServiceName: doc.proxyServiceName,
       body: doc.body ?? null,
       headers: doc.headers ?? {},
       responseStatus: doc.responseStatus ?? 200,
@@ -282,6 +299,9 @@ export async function setRouteConfig(
         headers: normalized.headers,
         proxyMode: normalized.proxyMode,
         proxyUrl: normalized.proxyUrl,
+        proxyToClient: normalized.proxyToClient,
+        proxyClientId: normalized.proxyClientId,
+        proxyServiceName: normalized.proxyServiceName,
       },
     },
     { upsert: true },

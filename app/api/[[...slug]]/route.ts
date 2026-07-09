@@ -5,6 +5,8 @@ import {
   setRouteConfig,
 } from "@/lib/server/request-log";
 import { ensureServerConfigExists } from "@/lib/server/server-config";
+import { clientManager } from "@/lib/server/websocket";
+import type { RequestMessage } from "@/lib/server/websocket";
 
 type RouteContext = {
   params: Promise<{ slug?: string[] }>;
@@ -122,8 +124,40 @@ async function readRequest(request: Request, context: RouteContext) {
 
   let proxyRawResponseBody: ArrayBuffer | null = null;
   let proxyResolvedUrl: string | undefined;
+  let proxyClientId: string | undefined;
+  let proxyClientName: string | undefined;
+  let proxyServiceName: string | undefined;
 
-  if (configured?.proxyMode && configured.proxyUrl) {
+  if (configured?.proxyToClient && configured.proxyClientId && configured.proxyServiceName) {
+    try {
+      const proxied = await proxyToClientRequest({
+        serverName,
+        clientId: configured.proxyClientId,
+        serviceName: configured.proxyServiceName,
+        method,
+        path: extractAppendedPath(url.pathname, serverName),
+        headers,
+        body,
+        queryParams,
+      });
+
+      responseStatus = proxied.status;
+      responseHeaders = proxied.headers;
+      responseBody = proxied.body;
+      proxyClientId = configured.proxyClientId;
+      proxyClientName = proxied.clientName;
+      proxyServiceName = configured.proxyServiceName;
+    } catch (error) {
+      responseStatus = 502;
+      responseHeaders = {};
+      responseBody = {
+        error: "Falha ao encaminhar para cliente conectado.",
+        details: error instanceof Error ? error.message : String(error),
+      };
+      proxyClientId = configured.proxyClientId;
+      proxyServiceName = configured.proxyServiceName;
+    }
+  } else if (configured?.proxyMode && configured.proxyUrl) {
     try {
       const proxied = await proxyRequest({
         originalRequest: request,
@@ -159,6 +193,9 @@ async function readRequest(request: Request, context: RouteContext) {
       body: { status: "ok" },
       proxyMode: false,
       proxyUrl: "",
+      proxyToClient: false,
+      proxyClientId: "",
+      proxyServiceName: "",
     });
   }
 
@@ -170,6 +207,9 @@ async function readRequest(request: Request, context: RouteContext) {
     proxyTargetUrl:
       configured?.proxyMode && configured.proxyUrl ? configured.proxyUrl : undefined,
     proxyResolvedUrl,
+    proxyClientId,
+    proxyClientName,
+    proxyServiceName,
     body,
     headers,
     responseStatus,
@@ -188,6 +228,99 @@ async function readRequest(request: Request, context: RouteContext) {
     status: responseStatus,
     headers: responseHeaders,
   });
+}
+
+function generateRequestId(): string {
+  return `req-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+}
+
+async function proxyToClientRequest({
+  serverName,
+  clientId,
+  serviceName,
+  method,
+  path,
+  headers,
+  body,
+  queryParams,
+}: {
+  serverName: string;
+  clientId: string;
+  serviceName: string;
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  body: unknown;
+  queryParams: Record<string, string | string[]>;
+}): Promise<{
+  status: number;
+  headers: Record<string, string>;
+  body: unknown;
+  clientName?: string;
+}> {
+  const clients = clientManager.getClientsByServer(serverName);
+  const client = clients.find((c) => c.clientId === clientId);
+
+  if (!client) {
+    throw new Error(`Cliente "${clientId}" não encontrado.`);
+  }
+
+  if (client.status !== "online") {
+    throw new Error(`Cliente "${client.clientName}" está offline.`);
+  }
+
+  const serviceExists = client.localServices.some((s) => s.name === serviceName);
+  if (!serviceExists) {
+    throw new Error(
+      `Serviço "${serviceName}" não disponível no cliente "${client.clientName}".`
+    );
+  }
+
+  const queryString = Object.entries(queryParams)
+    .map(([key, value]) => {
+      if (Array.isArray(value)) {
+        return value.map((v) => `${encodeURIComponent(key)}=${encodeURIComponent(v)}`).join("&");
+      }
+      return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+    })
+    .join("&");
+
+  const fullPath = queryString ? `${path}?${queryString}` : path;
+
+  const requestId = generateRequestId();
+  const requestMessage: RequestMessage = {
+    type: "request",
+    requestId,
+    targetClientId: clientId,
+    serviceName,
+    method,
+    path: fullPath,
+    headers,
+    body,
+  };
+
+  const sent = clientManager.sendToClient(serverName, clientId, requestMessage);
+  if (!sent) {
+    throw new Error(`Falha ao enviar requisição para cliente "${client.clientName}".`);
+  }
+
+  const response = await clientManager.registerPendingRequest(requestId, 30000);
+
+  if (response.error) {
+    return {
+      status: response.status,
+      headers: response.headers,
+      body: { error: response.error },
+      clientName: client.clientName,
+    };
+  }
+
+  return {
+    status: response.status,
+    headers: response.headers,
+    body: response.body,
+    clientName: client.clientName,
+  };
 }
 
 async function proxyRequest({

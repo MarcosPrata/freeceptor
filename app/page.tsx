@@ -12,6 +12,9 @@ type ApiRequestLog = {
   queryParams: Record<string, string | string[]>;
   proxyTargetUrl?: string;
   proxyResolvedUrl?: string;
+  proxyClientId?: string;
+  proxyClientName?: string;
+  proxyServiceName?: string;
   body: unknown;
   headers: Record<string, string>;
   responseStatus: number;
@@ -36,7 +39,28 @@ type ApiRouteConfig = {
   headers: Record<string, string>;
   proxyMode?: boolean;
   proxyUrl?: string;
+  proxyToClient?: boolean;
+  proxyClientId?: string;
+  proxyServiceName?: string;
 };
+
+type ProxyServiceInfo = {
+  name: string;
+  port: number;
+  host: string;
+};
+
+type ProxyClientInfo = {
+  clientId: string;
+  clientName: string;
+  serverName: string;
+  localServices: ProxyServiceInfo[];
+  connectedAt: string;
+  lastHeartbeat: string;
+  status: "online" | "offline";
+};
+
+type ProxyModeType = "disabled" | "url" | "client";
 
 function normalizePathFront(path: string): string {
   if (!path) return "/";
@@ -184,8 +208,11 @@ export default function Home() {
   const [configStatus, setConfigStatus] = useState<string>("200");
   const [configBody, setConfigBody] = useState<string>('{"status":"ok"}');
   const [configHeaders, setConfigHeaders] = useState<string>("{}");
-  const [configProxyMode, setConfigProxyMode] = useState(false);
   const [configProxyUrl, setConfigProxyUrl] = useState("");
+  const [configProxyModeType, setConfigProxyModeType] = useState<ProxyModeType>("disabled");
+  const [configProxyClientId, setConfigProxyClientId] = useState("");
+  const [configProxyServiceName, setConfigProxyServiceName] = useState("");
+  const [connectedClients, setConnectedClients] = useState<ProxyClientInfo[]>([]);
   const [configMessage, setConfigMessage] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
@@ -216,6 +243,9 @@ export default function Home() {
     setConfigHeaders("{}");
     setConfigProxyMode(false);
     setConfigProxyUrl("");
+    setConfigProxyModeType("disabled");
+    setConfigProxyClientId("");
+    setConfigProxyServiceName("");
 
     try {
       const res = await fetch("/api/routes/configs");
@@ -240,6 +270,17 @@ export default function Home() {
         );
         setConfigProxyMode(Boolean(match.proxyMode));
         setConfigProxyUrl(match.proxyUrl ?? "");
+        
+        // Determinar o tipo de proxy mode
+        if (match.proxyToClient && match.proxyClientId) {
+          setConfigProxyModeType("client");
+          setConfigProxyClientId(match.proxyClientId);
+          setConfigProxyServiceName(match.proxyServiceName ?? "");
+        } else if (match.proxyMode && match.proxyUrl) {
+          setConfigProxyModeType("url");
+        } else {
+          setConfigProxyModeType("disabled");
+        }
       }
     } catch (err) {
       console.error("Erro ao carregar config da rota:", err);
@@ -444,6 +485,26 @@ export default function Home() {
         window.clearTimeout(reconnectTimer);
       }
     };
+  }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+
+    async function loadClients() {
+      try {
+        const res = await fetch("/api/proxy/clients");
+        if (res.ok) {
+          const data = await res.json();
+          setConnectedClients(data.clients || []);
+        }
+      } catch {
+        // Ignore errors loading clients
+      }
+    }
+
+    loadClients();
+    const interval = setInterval(loadClients, 10000);
+    return () => clearInterval(interval);
   }, [authenticated]);
 
   if (!sessionReady) {
@@ -770,8 +831,13 @@ export default function Home() {
                           ) || "-"}
                         </span>
                         {log.proxyTargetUrl && (
+                          <span className="ml-2 inline-flex items-center rounded-full bg-blue-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-blue-500 dark:text-zinc-950">
+                            proxy url
+                          </span>
+                        )}
+                        {log.proxyClientId && (
                           <span className="ml-2 inline-flex items-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-violet-500 dark:text-zinc-950">
-                            proxy mode
+                            proxy client
                           </span>
                         )}
                       </span>
@@ -851,13 +917,30 @@ export default function Home() {
                                 </span>
                               </div>
                               {log.proxyTargetUrl && (
-                                <div className="mb-2 rounded border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200">
+                                <div className="mb-2 rounded border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
                                   <div>
-                                    <span className="font-semibold">Proxy mode habilitado</span>
+                                    <span className="font-semibold">Proxy URL habilitado</span>
                                     <span>, esses dados foram respondidos por:</span>
                                   </div>
                                   <div className="mt-2 break-all font-mono text-[11px] font-semibold">
                                     {log.proxyResolvedUrl ?? log.proxyTargetUrl}
+                                  </div>
+                                </div>
+                              )}
+                              {log.proxyClientId && (
+                                <div className="mb-2 rounded border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200">
+                                  <div>
+                                    <span className="font-semibold">Proxy Client habilitado</span>
+                                    <span>, esses dados foram respondidos pelo cliente conectado:</span>
+                                  </div>
+                                  <div className="mt-2 flex items-center gap-2">
+                                    <span className="rounded bg-violet-200 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-violet-800 dark:bg-violet-800 dark:text-violet-200">
+                                      {log.proxyClientName || log.proxyClientId}
+                                    </span>
+                                    <span className="text-violet-600 dark:text-violet-400">→</span>
+                                    <span className="font-mono text-[11px]">
+                                      {log.proxyServiceName}
+                                    </span>
                                   </div>
                                 </div>
                               )}
@@ -1030,11 +1113,18 @@ export default function Home() {
                             e.preventDefault();
                             setConfigMessage(null);
                             try {
-                              if (configProxyMode && !configProxyUrl.trim()) {
-                                throw new Error(
-                                  "Informe a URL do proxy ou desative o proxy mode.",
-                                );
+                              if (configProxyModeType === "url" && !configProxyUrl.trim()) {
+                                throw new Error("Informe a URL do proxy.");
                               }
+                              if (configProxyModeType === "client") {
+                                if (!configProxyClientId) {
+                                  throw new Error("Selecione um cliente conectado.");
+                                }
+                                if (!configProxyServiceName) {
+                                  throw new Error("Selecione um serviço do cliente.");
+                                }
+                              }
+
                               const statusNumber = Number(configStatus) || 200;
                               const parsedBody = configBody ? JSON.parse(configBody) : null;
                               const parsedHeaders = configHeaders
@@ -1052,8 +1142,11 @@ export default function Home() {
                                   status: statusNumber,
                                   headers: parsedHeaders,
                                   responseBody: parsedBody,
-                                  proxyMode: configProxyMode,
-                                  proxyUrl: configProxyUrl.trim(),
+                                  proxyMode: configProxyModeType === "url",
+                                  proxyUrl: configProxyModeType === "url" ? configProxyUrl.trim() : "",
+                                  proxyToClient: configProxyModeType === "client",
+                                  proxyClientId: configProxyModeType === "client" ? configProxyClientId : "",
+                                  proxyServiceName: configProxyModeType === "client" ? configProxyServiceName : "",
                                 }),
                               });
 
@@ -1074,30 +1167,118 @@ export default function Home() {
                             }
                           }}
                         >
-                          <div className="mb-1 flex flex-wrap items-center gap-2">
-                            <label className="inline-flex items-center gap-2 text-[11px] text-zinc-700 dark:text-zinc-200">
-                              <input
-                                type="checkbox"
-                                className="h-3.5 w-3.5"
-                                checked={configProxyMode}
-                                onChange={(e) => setConfigProxyMode(e.target.checked)}
-                              />
-                              <span>Habilitar proxy mode</span>
-                            </label>
-                            {configProxyMode && (
-                              <input
-                                type="url"
-                                placeholder="https://api.exemplo.com/endpoint"
-                                className="h-7 min-w-72 flex-1 rounded border border-zinc-300 bg-white px-2 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                value={configProxyUrl}
-                                onChange={(e) => setConfigProxyUrl(e.target.value)}
-                              />
-                            )}
+                          <div className="mb-2">
+                            <span className="mb-1 block text-[11px] font-medium text-zinc-500">Modo de resposta</span>
+                            <div className="flex flex-wrap gap-3">
+                              <label className="inline-flex items-center gap-1.5 text-[11px]">
+                                <input
+                                  type="radio"
+                                  name="proxyModeType"
+                                  className="h-3.5 w-3.5"
+                                  checked={configProxyModeType === "disabled"}
+                                  onChange={() => setConfigProxyModeType("disabled")}
+                                />
+                                <span>Resposta mock</span>
+                              </label>
+                              <label className="inline-flex items-center gap-1.5 text-[11px]">
+                                <input
+                                  type="radio"
+                                  name="proxyModeType"
+                                  className="h-3.5 w-3.5"
+                                  checked={configProxyModeType === "url"}
+                                  onChange={() => setConfigProxyModeType("url")}
+                                />
+                                <span>Proxy para URL</span>
+                              </label>
+                              <label className="inline-flex items-center gap-1.5 text-[11px]">
+                                <input
+                                  type="radio"
+                                  name="proxyModeType"
+                                  className="h-3.5 w-3.5"
+                                  checked={configProxyModeType === "client"}
+                                  onChange={() => setConfigProxyModeType("client")}
+                                />
+                                <span>Proxy para cliente (ngrok-style)</span>
+                              </label>
+                            </div>
                           </div>
+
+                          {configProxyModeType === "url" && (
+                            <div className="mb-2 rounded border border-blue-200 bg-blue-50 p-2 dark:border-blue-900 dark:bg-blue-950/30">
+                              <label className="flex flex-col gap-1">
+                                <span className="text-[11px] font-medium text-blue-700 dark:text-blue-300">URL de destino</span>
+                                <input
+                                  type="url"
+                                  placeholder="https://api.exemplo.com/endpoint"
+                                  className="h-7 rounded border border-zinc-300 bg-white px-2 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                  value={configProxyUrl}
+                                  onChange={(e) => setConfigProxyUrl(e.target.value)}
+                                />
+                              </label>
+                            </div>
+                          )}
+
+                          {configProxyModeType === "client" && (
+                            <div className="mb-2 rounded border border-violet-200 bg-violet-50 p-2 dark:border-violet-900 dark:bg-violet-950/30">
+                              <div className="mb-1 flex items-center gap-1">
+                                <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300">Cliente conectado</span>
+                                <span className="rounded bg-violet-200 px-1 py-0.5 text-[9px] font-medium text-violet-800 dark:bg-violet-800 dark:text-violet-200">
+                                  ngrok-style
+                                </span>
+                              </div>
+                              {connectedClients.filter(c => c.status === "online").length === 0 ? (
+                                <div className="rounded bg-amber-100 px-2 py-1.5 text-[11px] text-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+                                  Nenhum cliente online. Inicie um proxy-reverse agent para usar esta funcionalidade.
+                                </div>
+                              ) : (
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                  <label className="flex flex-col gap-1">
+                                    <span className="text-[10px] text-violet-600 dark:text-violet-400">Cliente</span>
+                                    <select
+                                      className="h-7 rounded border border-zinc-300 bg-white px-2 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                      value={configProxyClientId}
+                                      onChange={(e) => {
+                                        setConfigProxyClientId(e.target.value);
+                                        setConfigProxyServiceName("");
+                                      }}
+                                    >
+                                      <option value="">Selecione um cliente</option>
+                                      {connectedClients
+                                        .filter(c => c.status === "online")
+                                        .map((client) => (
+                                          <option key={client.clientId} value={client.clientId}>
+                                            {client.clientName} ({client.localServices.length} serviços)
+                                          </option>
+                                        ))}
+                                    </select>
+                                  </label>
+                                  <label className="flex flex-col gap-1">
+                                    <span className="text-[10px] text-violet-600 dark:text-violet-400">Serviço</span>
+                                    <select
+                                      className="h-7 rounded border border-zinc-300 bg-white px-2 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                      value={configProxyServiceName}
+                                      onChange={(e) => setConfigProxyServiceName(e.target.value)}
+                                      disabled={!configProxyClientId}
+                                    >
+                                      <option value="">Selecione um serviço</option>
+                                      {connectedClients
+                                        .find(c => c.clientId === configProxyClientId)
+                                        ?.localServices.map((service) => (
+                                          <option key={service.name} value={service.name}>
+                                            {service.name} ({service.host}:{service.port})
+                                          </option>
+                                        ))}
+                                    </select>
+                                  </label>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           <div
                             className={cn(
                               "flex flex-wrap gap-2 transition-opacity",
-                              configProxyMode && "opacity-50",
+                              configProxyModeType !== "disabled" && "opacity-50",
                             )}
                           >
                             <label className="flex items-center gap-1 text-[11px]">
@@ -1109,14 +1290,14 @@ export default function Home() {
                                 className="h-6 w-16 rounded border border-zinc-300 bg-white px-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                                 value={configStatus}
                                 onChange={(e) => setConfigStatus(e.target.value)}
-                                disabled={configProxyMode}
+                                disabled={configProxyModeType !== "disabled"}
                               />
                             </label>
                           </div>
                           <div
                             className={cn(
                               "grid gap-2 md:grid-cols-2 transition-opacity",
-                              configProxyMode && "opacity-50",
+                              configProxyModeType !== "disabled" && "opacity-50",
                             )}
                           >
                             <label className="flex flex-col gap-1">
@@ -1126,7 +1307,7 @@ export default function Home() {
                                 className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                                 value={configBody}
                                 onChange={(e) => setConfigBody(e.target.value)}
-                                disabled={configProxyMode}
+                                disabled={configProxyModeType !== "disabled"}
                               />
                             </label>
                             <div className="flex flex-col gap-1">
@@ -1137,7 +1318,7 @@ export default function Home() {
                                   className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                                   value={configHeaders}
                                   onChange={(e) => setConfigHeaders(e.target.value)}
-                                  disabled={configProxyMode}
+                                  disabled={configProxyModeType !== "disabled"}
                                 />
                               </label>
                               <div>

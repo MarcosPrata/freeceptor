@@ -24,7 +24,18 @@ export async function POST(request: Request) {
   const serverName = getServerFromCookie(request);
   if (!serverName) return unauthorized();
   const body = await request.json();
-  const { method, path, status, headers, responseBody, proxyMode, proxyUrl } = body as {
+  const {
+    method,
+    path,
+    status,
+    headers,
+    responseBody,
+    proxyMode,
+    proxyUrl,
+    proxyToClient,
+    proxyClientId,
+    proxyServiceName,
+  } = body as {
     method: string;
     path: string;
     status?: number;
@@ -32,6 +43,9 @@ export async function POST(request: Request) {
     responseBody?: unknown;
     proxyMode?: boolean;
     proxyUrl?: string;
+    proxyToClient?: boolean;
+    proxyClientId?: string;
+    proxyServiceName?: string;
   };
 
   if (!method || !path) {
@@ -49,6 +63,9 @@ export async function POST(request: Request) {
     body: responseBody ?? null,
     proxyMode: Boolean(proxyMode),
     proxyUrl: proxyUrl?.trim() ?? "",
+    proxyToClient: Boolean(proxyToClient),
+    proxyClientId: proxyClientId?.trim() ?? "",
+    proxyServiceName: proxyServiceName?.trim() ?? "",
   });
 
   return NextResponse.json(config);
