@@ -231,7 +231,8 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [configBody, setConfigBody] = useState<string>('{"status":"ok"}');
   const [configHeaders, setConfigHeaders] = useState<string>("{}");
   const [configProxyUrl, setConfigProxyUrl] = useState("");
-  const [configProxyModeType, setConfigProxyModeType] = useState<ProxyModeType>("disabled");
+  // null = sem override de rota (usa proxy da API quando ela tem proxy configurado)
+  const [configProxyModeType, setConfigProxyModeType] = useState<ProxyModeType | null>("disabled");
   const [configProxyClientId, setConfigProxyClientId] = useState("");
   const [configProxyServiceName, setConfigProxyServiceName] = useState("");
   const [connectedClients, setConnectedClients] = useState<ProxyClientInfo[]>([]);
@@ -267,7 +268,8 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           configStatus?: string;
           configBody?: string;
           configHeaders?: string;
-          configProxyModeType?: ProxyModeType;
+          // null is a valid persisted value (= no route override, use API proxy)
+          configProxyModeType?: ProxyModeType | null;
           configProxyUrl?: string;
           configProxyClientId?: string;
           configProxyServiceName?: string;
@@ -276,7 +278,8 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         if (cs.configStatus) setConfigStatus(cs.configStatus);
         if (cs.configBody !== undefined) setConfigBody(cs.configBody);
         if (cs.configHeaders !== undefined) setConfigHeaders(cs.configHeaders);
-        if (cs.configProxyModeType) setConfigProxyModeType(cs.configProxyModeType);
+        // Restore even when null (null is a meaningful state)
+        if ("configProxyModeType" in cs) setConfigProxyModeType(cs.configProxyModeType ?? null);
         if (cs.configProxyUrl !== undefined) setConfigProxyUrl(cs.configProxyUrl);
         if (cs.configProxyClientId !== undefined) setConfigProxyClientId(cs.configProxyClientId);
         if (cs.configProxyServiceName !== undefined) setConfigProxyServiceName(cs.configProxyServiceName);
@@ -464,7 +467,9 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     setConfigBody('{"status":"ok"}');
     setConfigHeaders("{}");
     setConfigProxyUrl("");
-    setConfigProxyModeType("disabled");
+    // When the API has a proxy, default to null (no route-level override = inherit API proxy).
+    // When there's no API proxy, default to "disabled" (mock).
+    setConfigProxyModeType(apiHasProxy ? null : "disabled");
     setConfigProxyClientId("");
     setConfigProxyServiceName("");
 
@@ -497,9 +502,13 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           setConfigProxyModeType("url");
           setConfigProxyUrl(match.proxyUrl);
         } else {
+          // Explicit mock config (proxyMode: false) — always show as "disabled" regardless
+          // of whether the API has a proxy, since this is an intentional override.
           setConfigProxyModeType("disabled");
         }
       }
+      // If no match AND apiHasProxy: stays null (route inherits API proxy, no override)
+      // If no match AND !apiHasProxy: stays "disabled" (mock as default)
     } catch (err) {
       console.error("Erro ao carregar config da rota:", err);
     }
@@ -1567,17 +1576,31 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
 
                     {configRouteId === route.id && (
                       <div className="border-t border-zinc-100 bg-zinc-50 px-3 py-3 text-[11px] text-zinc-700 dark:border-zinc-900 dark:bg-zinc-900 dark:text-zinc-200">
-                        {apiHasProxy && (
-                          <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
-                            Esta API tem proxy configurado. Configurar proxy aqui na rota irá <strong>sobrescrever</strong> o proxy da API para esta rota específica.
-                          </div>
-                        )}
                         <form
                           className="flex flex-col gap-2"
                           onSubmit={async (e) => {
                             e.preventDefault();
                             setConfigMessage(null);
                             try {
+                              // null = "usar proxy da API" → remove qualquer override de rota
+                              if (configProxyModeType === null) {
+                                const res = await fetch("/api/routes", {
+                                  method: "DELETE",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({
+                                    apiName: selectedApi,
+                                    method: route.method,
+                                    path: route.path,
+                                  }),
+                                });
+                                if (!res.ok) {
+                                  const text = await res.text();
+                                  throw new Error(text);
+                                }
+                                setConfigMessage("Override removido. Esta rota usará o proxy da API.");
+                                return;
+                              }
+
                               if (configProxyModeType === "url" && !configProxyUrl.trim()) {
                                 throw new Error("Informe a URL do proxy.");
                               }
@@ -1638,40 +1661,46 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                           <div className="mb-2">
                             <span className="mb-1 block text-[11px] font-medium text-zinc-500">
                               Modo de resposta
+                              {configProxyModeType !== null && apiHasProxy && (
+                                <span className="ml-1.5 text-amber-600 dark:text-amber-400">
+                                  — sobrescreve o proxy da API para esta rota
+                                </span>
+                              )}
                             </span>
                             <div className="flex flex-wrap gap-3">
-                              <label className="inline-flex items-center gap-1.5 text-[11px]">
-                                <input
-                                  type="radio"
-                                  name="proxyModeType"
-                                  className="h-3.5 w-3.5"
-                                  checked={configProxyModeType === "disabled"}
-                                  onChange={() => setConfigProxyModeType("disabled")}
-                                />
-                                <span>Resposta mock</span>
-                              </label>
-                              <label className="inline-flex items-center gap-1.5 text-[11px]">
-                                <input
-                                  type="radio"
-                                  name="proxyModeType"
-                                  className="h-3.5 w-3.5"
-                                  checked={configProxyModeType === "url"}
-                                  onChange={() => setConfigProxyModeType("url")}
-                                />
-                                <span>Proxy para URL</span>
-                              </label>
-                              <label className="inline-flex items-center gap-1.5 text-[11px]">
-                                <input
-                                  type="radio"
-                                  name="proxyModeType"
-                                  className="h-3.5 w-3.5"
-                                  checked={configProxyModeType === "client"}
-                                  onChange={() => setConfigProxyModeType("client")}
-                                />
-                                <span>Proxy para cliente (ngrok-style)</span>
-                              </label>
+                              {(["disabled", "url", "client"] as const).map((mode) => {
+                                const labels: Record<string, string> = {
+                                  disabled: "Resposta mock",
+                                  url: "Proxy para URL",
+                                  client: "Proxy para cliente (ngrok-style)",
+                                };
+                                const isChecked = configProxyModeType === mode;
+                                return (
+                                  <label key={mode} className="inline-flex cursor-pointer items-center gap-1.5 text-[11px]">
+                                    <input
+                                      type="radio"
+                                      name="proxyModeType"
+                                      className="h-3.5 w-3.5"
+                                      checked={isChecked}
+                                      onChange={() => setConfigProxyModeType(mode)}
+                                      onClick={() => {
+                                        // Toggle: clicking an already-selected radio deselects it
+                                        if (isChecked) setConfigProxyModeType(null);
+                                      }}
+                                    />
+                                    <span>{labels[mode]}</span>
+                                  </label>
+                                );
+                              })}
                             </div>
                           </div>
+
+                          {/* When null + apiHasProxy: show informational banner */}
+                          {configProxyModeType === null && apiHasProxy && (
+                            <div className="mb-1 rounded border border-zinc-200 bg-white px-2 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
+                              Nenhum override configurado — esta rota usa o <strong className="text-zinc-700 dark:text-zinc-300">proxy da API</strong>. Selecione um modo acima para sobrescrever o comportamento desta rota específica.
+                            </div>
+                          )}
 
                           {configProxyModeType === "url" && (
                             <div className="mb-2 rounded border border-blue-200 bg-blue-50 p-2 dark:border-blue-900 dark:bg-blue-950/30">
@@ -1760,70 +1789,69 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                             </div>
                           )}
 
-                          <div
-                            className={cn(
-                              "flex flex-wrap gap-2 transition-opacity",
-                              configProxyModeType !== "disabled" && "opacity-50",
-                            )}
-                          >
-                            <label className="flex items-center gap-1 text-[11px]">
-                              <span className="text-zinc-500">Status</span>
-                              <input
-                                type="number"
-                                min={100}
-                                max={599}
-                                className="h-6 w-16 rounded border border-zinc-300 bg-white px-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                value={configStatus}
-                                onChange={(e) => setConfigStatus(e.target.value)}
-                                disabled={configProxyModeType !== "disabled"}
-                              />
-                            </label>
-                          </div>
-                          <div
-                            className={cn(
-                              "grid gap-2 md:grid-cols-2 transition-opacity",
-                              configProxyModeType !== "disabled" && "opacity-50",
-                            )}
-                          >
-                            <label className="flex flex-col gap-1">
-                              <span className="text-[11px] text-zinc-500">Body (JSON)</span>
-                              <textarea
-                                rows={6}
-                                className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                value={configBody}
-                                onChange={(e) => setConfigBody(e.target.value)}
-                                disabled={configProxyModeType !== "disabled"}
-                              />
-                            </label>
-                            <div className="flex flex-col gap-1">
-                              <label className="flex flex-col gap-1">
-                                <span className="text-[11px] text-zinc-500">
-                                  Cabeçalhos (JSON)
-                                </span>
-                                <textarea
-                                  rows={4}
-                                  className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                  value={configHeaders}
-                                  onChange={(e) => setConfigHeaders(e.target.value)}
-                                  disabled={configProxyModeType !== "disabled"}
-                                />
-                              </label>
-                              <div>
-                                <span className="mb-1 block text-[11px] text-zinc-500">
-                                  Cabeçalhos (tabela)
-                                </span>
-                                {renderKeyValueTable(
-                                  toStringRecord(safeParseJson(configHeaders || "{}")),
-                                )}
+                          {configProxyModeType === "disabled" && (
+                            <>
+                              <div className="flex flex-wrap gap-2">
+                                <label className="flex items-center gap-1 text-[11px]">
+                                  <span className="text-zinc-500">Status</span>
+                                  <input
+                                    type="number"
+                                    min={100}
+                                    max={599}
+                                    className="h-6 w-16 rounded border border-zinc-300 bg-white px-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                    value={configStatus}
+                                    onChange={(e) => setConfigStatus(e.target.value)}
+                                  />
+                                </label>
                               </div>
-                            </div>
-                          </div>
+                              <div className="grid gap-2 md:grid-cols-2">
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-[11px] text-zinc-500">Body (JSON)</span>
+                                  <textarea
+                                    rows={6}
+                                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                    value={configBody}
+                                    onChange={(e) => setConfigBody(e.target.value)}
+                                  />
+                                </label>
+                                <div className="flex flex-col gap-1">
+                                  <label className="flex flex-col gap-1">
+                                    <span className="text-[11px] text-zinc-500">
+                                      Cabeçalhos (JSON)
+                                    </span>
+                                    <textarea
+                                      rows={4}
+                                      className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                      value={configHeaders}
+                                      onChange={(e) => setConfigHeaders(e.target.value)}
+                                    />
+                                  </label>
+                                  <div>
+                                    <span className="mb-1 block text-[11px] text-zinc-500">
+                                      Cabeçalhos (tabela)
+                                    </span>
+                                    {renderKeyValueTable(
+                                      toStringRecord(safeParseJson(configHeaders || "{}")),
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </>
+                          )}
+
                           <div className="flex items-center justify-between gap-2">
                             <button
                               type="submit"
-                              className="inline-flex items-center rounded bg-zinc-900 px-3 py-1 text-[11px] font-medium text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                              className={cn(
+                                "inline-flex items-center rounded px-3 py-1 text-[11px] font-medium",
+                                configProxyModeType === null && apiHasProxy
+                                  ? "bg-zinc-200 text-zinc-600 hover:bg-zinc-300 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
+                                  : "bg-zinc-900 text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200",
+                              )}
                             >
-                              Salvar configuração
+                              {configProxyModeType === null && apiHasProxy
+                                ? "Usar proxy da API (remover override)"
+                                : "Salvar configuração"}
                             </button>
                             {configMessage && (
                               <span className="text-[11px] text-zinc-500">
