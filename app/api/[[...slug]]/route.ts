@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import {
   addRequestLog,
-  getRouteConfigFor,
+  resolveProxyConfig,
   setRouteConfig,
+  migrateExistingRecords,
 } from "@/lib/server/request-log";
 import { ensureServerConfigExists } from "@/lib/server/server-config";
 import { clientManager } from "@/lib/server/websocket";
@@ -49,22 +50,31 @@ export async function CONNECT(request: Request, context: RouteContext) {
 }
 
 async function readRequest(request: Request, context: RouteContext) {
-  console.log("readRequest", request.url);
   const { slug } = await context.params;
-  if (!slug?.length) {
+
+  // Require at least /api/{server}/{api}/{...path}
+  if (!slug || slug.length < 2) {
     return NextResponse.json(
       {
         error:
-          "Rota inválida. Use o padrão /api/<nome-do-server>/* para registrar chamadas.",
+          "Rota inválida. Use o padrão /api/<server>/<api>/* para registrar chamadas.",
       },
       { status: 404 },
     );
   }
 
-  const serverNameFromPath = normalizeServerSlug(slug[0]);
+  const serverNameFromPath = normalizeSlug(slug[0]);
+  const apiNameFromPath = normalizeSlug(slug[1]);
+
   if (!serverNameFromPath) {
     return NextResponse.json(
       { error: "nome-do-server inválido no path." },
+      { status: 400 },
+    );
+  }
+  if (!apiNameFromPath) {
+    return NextResponse.json(
+      { error: "nome-da-api inválido no path." },
       { status: 400 },
     );
   }
@@ -72,7 +82,12 @@ async function readRequest(request: Request, context: RouteContext) {
   const url = new URL(request.url);
   const method = request.method;
   const serverName = await ensureServerConfigExists(serverNameFromPath);
-  const pathFromSlug = slug && slug.length ? `/${slug.join("/")}` : "/";
+
+  // Run migration for existing records (no-op if already migrated)
+  await migrateExistingRecords(serverName);
+
+  // Path is everything after /api/{server}/{api}
+  const pathFromSlug = slug.length > 2 ? `/${slug.slice(2).join("/")}` : "/";
   const queryParams = toQueryObject(url.searchParams);
   const requestForBodyParsing = request.clone();
   const rawRequestBody = await request
@@ -104,10 +119,7 @@ async function readRequest(request: Request, context: RouteContext) {
         }
       }
 
-      body = {
-        _type: "form-data",
-        ...asObject,
-      };
+      body = { _type: "form-data", ...asObject };
     } else {
       const text = await requestForBodyParsing.text();
       body = text || null;
@@ -115,12 +127,20 @@ async function readRequest(request: Request, context: RouteContext) {
   } catch {
     // body vazio ou não suportado; permanece null
   }
+
   const headers = Object.fromEntries(request.headers);
 
-  const configured = await getRouteConfigFor(serverName, method, pathFromSlug);
-  let responseStatus = configured?.status ?? 200;
-  let responseHeaders = configured?.headers ?? {};
-  let responseBody = configured?.body ?? ({ status: "ok" } as unknown);
+  // Resolve proxy with hierarchy: route > api > none
+  const resolved = await resolveProxyConfig(
+    serverName,
+    apiNameFromPath,
+    method,
+    pathFromSlug,
+  );
+
+  let responseStatus = resolved.routeStatus;
+  let responseHeaders = resolved.routeHeaders;
+  let responseBody = resolved.routeBody;
 
   let proxyRawResponseBody: ArrayBuffer | null = null;
   let proxyResolvedUrl: string | undefined;
@@ -128,14 +148,14 @@ async function readRequest(request: Request, context: RouteContext) {
   let proxyClientName: string | undefined;
   let proxyServiceName: string | undefined;
 
-  if (configured?.proxyToClient && configured.proxyClientId && configured.proxyServiceName) {
+  if (resolved.proxyToClient && resolved.proxyClientId && resolved.proxyServiceName) {
     try {
       const proxied = await proxyToClientRequest({
         serverName,
-        clientId: configured.proxyClientId,
-        serviceName: configured.proxyServiceName,
+        clientId: resolved.proxyClientId,
+        serviceName: resolved.proxyServiceName,
         method,
-        path: extractAppendedPath(url.pathname, serverName),
+        path: extractAppendedPath(url.pathname, serverNameFromPath, apiNameFromPath),
         headers,
         body,
         queryParams,
@@ -144,9 +164,9 @@ async function readRequest(request: Request, context: RouteContext) {
       responseStatus = proxied.status;
       responseHeaders = proxied.headers;
       responseBody = proxied.body;
-      proxyClientId = configured.proxyClientId;
+      proxyClientId = resolved.proxyClientId;
       proxyClientName = proxied.clientName;
-      proxyServiceName = configured.proxyServiceName;
+      proxyServiceName = resolved.proxyServiceName;
     } catch (error) {
       responseStatus = 502;
       responseHeaders = {};
@@ -154,16 +174,17 @@ async function readRequest(request: Request, context: RouteContext) {
         error: "Falha ao encaminhar para cliente conectado.",
         details: error instanceof Error ? error.message : String(error),
       };
-      proxyClientId = configured.proxyClientId;
-      proxyServiceName = configured.proxyServiceName;
+      proxyClientId = resolved.proxyClientId;
+      proxyServiceName = resolved.proxyServiceName;
     }
-  } else if (configured?.proxyMode && configured.proxyUrl) {
+  } else if (resolved.proxyMode && resolved.proxyUrl) {
     try {
       const proxied = await proxyRequest({
         originalRequest: request,
-        targetUrl: configured.proxyUrl,
+        targetUrl: resolved.proxyUrl,
         incomingUrl: url,
-        serverName,
+        serverName: serverNameFromPath,
+        apiName: apiNameFromPath,
         rawRequestBody,
       });
 
@@ -182,10 +203,10 @@ async function readRequest(request: Request, context: RouteContext) {
     }
   }
 
-  // Garante que toda rota chamada exista também em configs,
-  // para continuar aparecendo na aba de rotas mesmo após limpar requests.
-  if (!configured) {
+  // Ensure every called route appears in configs (auto-create default config on first call)
+  if (resolved.source === "none") {
     await setRouteConfig(serverName, {
+      apiName: apiNameFromPath,
       method,
       path: pathFromSlug,
       status: 200,
@@ -199,13 +220,13 @@ async function readRequest(request: Request, context: RouteContext) {
     });
   }
 
-  await addRequestLog(serverName, {
+  await addRequestLog(serverName, apiNameFromPath, {
     method,
     path: pathFromSlug,
     slug: slug ?? [],
     queryParams,
     proxyTargetUrl:
-      configured?.proxyMode && configured.proxyUrl ? configured.proxyUrl : undefined,
+      resolved.proxyMode && resolved.proxyUrl ? resolved.proxyUrl : undefined,
     proxyResolvedUrl,
     proxyClientId,
     proxyClientName,
@@ -272,14 +293,16 @@ async function proxyToClientRequest({
   const serviceExists = client.localServices.some((s) => s.name === serviceName);
   if (!serviceExists) {
     throw new Error(
-      `Serviço "${serviceName}" não disponível no cliente "${client.clientName}".`
+      `Serviço "${serviceName}" não disponível no cliente "${client.clientName}".`,
     );
   }
 
   const queryString = Object.entries(queryParams)
     .map(([key, value]) => {
       if (Array.isArray(value)) {
-        return value.map((v) => `${encodeURIComponent(key)}=${encodeURIComponent(v)}`).join("&");
+        return value
+          .map((v) => `${encodeURIComponent(key)}=${encodeURIComponent(v)}`)
+          .join("&");
       }
       return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
     })
@@ -301,7 +324,9 @@ async function proxyToClientRequest({
 
   const sent = clientManager.sendToClient(serverName, clientId, requestMessage);
   if (!sent) {
-    throw new Error(`Falha ao enviar requisição para cliente "${client.clientName}".`);
+    throw new Error(
+      `Falha ao enviar requisição para cliente "${client.clientName}".`,
+    );
   }
 
   const response = await clientManager.registerPendingRequest(requestId, 30000);
@@ -328,16 +353,22 @@ async function proxyRequest({
   targetUrl,
   incomingUrl,
   serverName,
+  apiName,
   rawRequestBody,
 }: {
   originalRequest: Request;
   targetUrl: string;
   incomingUrl: URL;
   serverName: string;
+  apiName: string;
   rawRequestBody: ArrayBuffer;
 }) {
   const proxyUrl = new URL(targetUrl);
-  const appendedPath = extractAppendedPath(incomingUrl.pathname, serverName);
+  const appendedPath = extractAppendedPath(
+    incomingUrl.pathname,
+    serverName,
+    apiName,
+  );
   proxyUrl.pathname = joinPaths(proxyUrl.pathname, appendedPath);
   for (const [key, value] of incomingUrl.searchParams.entries()) {
     proxyUrl.searchParams.append(key, value);
@@ -403,15 +434,29 @@ function toQueryObject(
   return query;
 }
 
-function normalizeServerSlug(value?: string): string {
+function normalizeSlug(value?: string): string {
   return value?.trim().toLowerCase() ?? "";
 }
 
-function extractAppendedPath(pathname: string, serverName: string): string {
+/**
+ * Extracts the path after /api/{server}/{api} from the full pathname.
+ * e.g. /api/dev/payments/users/123 → /users/123
+ */
+function extractAppendedPath(
+  pathname: string,
+  serverName: string,
+  apiName: string,
+): string {
   const parts = pathname.split("/").filter(Boolean);
+  // parts: ["api", serverName, apiName, ...rest]
   if (parts[0] !== "api") return pathname;
-  if (parts[1] !== serverName) return `/${parts.slice(1).join("/")}`;
-  return `/${parts.slice(2).join("/")}`;
+  if (parts[1]?.toLowerCase() !== serverName.toLowerCase()) {
+    return `/${parts.slice(1).join("/")}`;
+  }
+  if (parts[2]?.toLowerCase() !== apiName.toLowerCase()) {
+    return `/${parts.slice(2).join("/")}`;
+  }
+  return `/${parts.slice(3).join("/")}` || "/";
 }
 
 function joinPaths(basePath: string, appendedPath: string): string {

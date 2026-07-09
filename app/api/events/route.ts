@@ -16,6 +16,10 @@ export async function GET(request: Request) {
       { status: 401 },
     );
   }
+
+  const url = new URL(request.url);
+  const apiName = url.searchParams.get("apiName") || "default";
+
   const { signal } = request;
   const encoder = new TextEncoder();
 
@@ -35,24 +39,22 @@ export async function GET(request: Request) {
 
       function sendHeartbeat() {
         if (closed) return;
-        controller.enqueue(encoder.encode(": heartbeat\n\n"));
+        // Send as a real data event (not a comment) so browsers reset their connection timer.
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`));
       }
 
-      // envia snapshot inicial
       sendRetryHint(3000);
-      const snapshot = await getSnapshot(serverName);
+      const snapshot = await getSnapshot(serverName, apiName);
       send({
         type: "snapshot",
         ...snapshot,
         clients: clientManager.getClientsByServer(serverName),
       });
 
-      // assina mudanças de logs/routes
-      const unsubscribe = subscribeToChanges(serverName, (payload) => {
+      const unsubscribe = subscribeToChanges(serverName, apiName, (payload) => {
         send({ type: "update", ...payload });
       });
 
-      // assina mudanças de clientes WebSocket
       const unsubscribeClients = clientManager.onClientUpdate((updatedServer) => {
         if (updatedServer !== serverName) return;
         send({
@@ -61,7 +63,6 @@ export async function GET(request: Request) {
         });
       });
 
-      // heartbeat evita timeout silencioso em conexões longas
       const heartbeatId = setInterval(() => {
         sendHeartbeat();
       }, 15000);
@@ -75,7 +76,6 @@ export async function GET(request: Request) {
         controller.close();
       }
 
-      // encerra quando o cliente desconectar
       signal.addEventListener("abort", () => {
         closeStream();
       });
@@ -95,4 +95,3 @@ export async function GET(request: Request) {
     },
   });
 }
-

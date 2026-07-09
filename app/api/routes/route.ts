@@ -13,10 +13,16 @@ function unauthorized() {
   );
 }
 
+function getApiName(request: Request): string {
+  const url = new URL(request.url);
+  return url.searchParams.get("apiName") || "default";
+}
+
 export async function GET(request: Request) {
   const serverName = getServerFromCookie(request);
   if (!serverName) return unauthorized();
-  const routes = await getRouteStatsWithConfigs(serverName);
+  const apiName = getApiName(request);
+  const routes = await getRouteStatsWithConfigs(serverName, apiName);
   return NextResponse.json(routes);
 }
 
@@ -25,6 +31,7 @@ export async function POST(request: Request) {
   if (!serverName) return unauthorized();
   const body = await request.json();
   const {
+    apiName,
     method,
     path,
     status,
@@ -36,6 +43,7 @@ export async function POST(request: Request) {
     proxyClientId,
     proxyServiceName,
   } = body as {
+    apiName?: string;
     method: string;
     path: string;
     status?: number;
@@ -56,6 +64,7 @@ export async function POST(request: Request) {
   }
 
   const config = await setRouteConfig(serverName, {
+    apiName: apiName ?? "default",
     method,
     path,
     status: status ?? 200,
@@ -75,6 +84,7 @@ export async function DELETE(request: Request) {
   const serverName = getServerFromCookie(request);
   if (!serverName) return unauthorized();
   const body = await request.json().catch(() => null);
+  const apiName = (body?.apiName as string | undefined) ?? "default";
   const method = body?.method as string | undefined;
   const path = body?.path as string | undefined;
 
@@ -85,7 +95,6 @@ export async function DELETE(request: Request) {
     );
   }
 
-  const removed = await deleteRouteConfig(serverName, method, path);
+  const removed = await deleteRouteConfig(serverName, apiName, method, path);
   return NextResponse.json({ ok: removed });
 }
-

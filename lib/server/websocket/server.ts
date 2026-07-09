@@ -22,7 +22,26 @@ export function createWebSocketServer(config: WebSocketServerConfig = {}): WebSo
   const { port, server, path = "/ws" } = config;
 
   if (server) {
-    wss = new WebSocketServer({ server, path });
+    // Use noServer mode so the ws library does NOT intercept all WebSocket upgrade events.
+    // With { server, path }, the ws library rejects upgrades for other paths (e.g.
+    // /_next/webpack-hmr used by Next.js HMR), breaking HMR with 400 errors.
+    // Instead, we manually route only /ws upgrades to our wss.
+    wss = new WebSocketServer({ noServer: true });
+
+    server.on("upgrade", (req, socket, head) => {
+      const url = req.url ?? "";
+      const index = url.indexOf("?");
+      const pathname = index !== -1 ? url.slice(0, index) : url;
+
+      if (pathname === path) {
+        wss!.handleUpgrade(req, socket, head, (ws) => {
+          wss!.emit("connection", ws, req);
+        });
+      }
+      // All other paths (e.g. /_next/webpack-hmr) are intentionally ignored here
+      // so that Next.js can handle them via its own upgrade listeners.
+    });
+
     console.log(`[WebSocket] Server attached to HTTP server at path ${path}`);
   } else {
     const wsPort = port || parseInt(process.env.WS_PORT || "3002", 10);
