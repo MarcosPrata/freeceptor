@@ -1,9 +1,10 @@
 import { loadConfig } from "./config.js";
-import { FreeceptorHttpClient } from "./http-client.js";
+import { FreeceptorWebSocketClient } from "./websocket-client.js";
 
 function main() {
   console.log("╔═══════════════════════════════════════════════════════╗");
   console.log("║       Freeceptor Reverse Proxy Agent v2.0             ║");
+  console.log("║                  (WebSocket Mode)                     ║");
   console.log("╚═══════════════════════════════════════════════════════╝");
   console.log();
 
@@ -29,16 +30,17 @@ function main() {
     console.log();
   }
 
-  const client = new FreeceptorHttpClient(config);
+  const client = new FreeceptorWebSocketClient(config);
 
-  client.start();
-
+  console.log("Connecting to Freeceptor via WebSocket...");
   console.log("Press Ctrl+C to stop.");
   console.log();
 
+  client.connect();
+
   process.on("SIGINT", () => {
     console.log("\nShutting down...");
-    client.stop();
+    client.disconnect();
     setTimeout(() => {
       console.log("Goodbye!");
       process.exit(0);
@@ -46,7 +48,7 @@ function main() {
   });
 
   process.on("SIGTERM", () => {
-    client.stop();
+    client.disconnect();
     setTimeout(() => process.exit(0), 1000);
   });
 }

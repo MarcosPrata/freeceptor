@@ -1,7 +1,7 @@
 {
   "name": "freeceptor-proxy-reverse",
-  "version": "0.2.0",
-  "description": "Reverse proxy agent for Freeceptor - connects to backend and exposes local services",
+  "version": "0.3.0",
+  "description": "Reverse proxy agent for Freeceptor - connects via WebSocket and exposes local services",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -9,9 +9,12 @@
     "build": "tsc",
     "start": "node dist/index.js"
   },
-  "dependencies": {},
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/ws": "^8.5.12",
     "tsx": "^4.19.0",
     "typescript": "^5"
   }

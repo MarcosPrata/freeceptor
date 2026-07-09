@@ -1,6 +1,6 @@
 # Freeceptor Reverse Proxy Agent
 
-Agente de proxy reverso para o Freeceptor. Roda localmente (em Docker ou Node.js), mantém conexão persistente com o backend e expõe serviços locais para acesso remoto.
+Agente de proxy reverso para o Freeceptor. Conecta-se ao backend via **WebSocket** para comunicação bidirecional em tempo real.
 
 ## Como Funciona
 
@@ -19,8 +19,8 @@ Agente de proxy reverso para o Freeceptor. Roda localmente (em Docker ou Node.js
 ┌───────────────────────────────────────────────────────────────────┐
 │                      Freeceptor Backend                            │
 │                                                                    │
-│   - Lista de clientes conectados                                   │
-│   - Roteia requisições entre clientes                              │
+│   - Mantém conexões WebSocket com todos os clientes                │
+│   - Roteia requisições entre clientes em tempo real                │
 │   - Permite acessar serviços em máquinas remotas                   │
 └───────────────────────────────────────────────────────────────────┘
                               ▲
@@ -37,10 +37,10 @@ Agente de proxy reverso para o Freeceptor. Roda localmente (em Docker ou Node.js
 ## Funcionalidades
 
 - **Conexão WebSocket persistente** com o backend Freeceptor
-- **Auto-reconexão** em caso de desconexão
-- **Exposição de serviços locais** para acesso remoto
-- **Heartbeat automático** para manter conexão ativa
-- **Execução de requisições** enviadas pelo backend
+- **Comunicação bidirecional** em tempo real
+- **Auto-reconexão** com backoff exponencial
+- **Heartbeat automático** a cada 30s para manter conexão ativa
+- **Execução de requisições** em serviços locais
 
 ## Configuração
 
@@ -53,7 +53,7 @@ Agente de proxy reverso para o Freeceptor. Roda localmente (em Docker ou Node.js
 | `SERVER_PASSWORD` | Não | Senha do server (se configurada) |
 | `LOCAL_SERVICES` | Não | Serviços locais para expor (ver formato abaixo) |
 | `VERBOSE` | Não | Habilita logs detalhados (padrão: `false`) |
-| `RECONNECT_INTERVAL` | Não | Intervalo de reconexão em ms (padrão: `5000`) |
+| `RECONNECT_INTERVAL` | Não | Intervalo base de reconexão em ms (padrão: `5000`) |
 
 ### Formato de LOCAL_SERVICES
 
@@ -66,6 +66,26 @@ LOCAL_SERVICES=api:3000
 LOCAL_SERVICES=api:3000,postgres:5432
 LOCAL_SERVICES=api:localhost:3000,db:192.168.1.100:5432
 ```
+
+## Protocolo WebSocket
+
+### Mensagens do Cliente → Servidor
+
+| Tipo | Descrição |
+|------|-----------|
+| `register` | Registra o cliente com seus serviços locais |
+| `heartbeat` | Mantém a conexão ativa |
+| `response` | Resposta de uma requisição executada |
+
+### Mensagens do Servidor → Cliente
+
+| Tipo | Descrição |
+|------|-----------|
+| `welcome` | Confirmação de conexão |
+| `register_ack` | Confirmação de registro |
+| `heartbeat_ack` | Confirmação de heartbeat |
+| `request` | Requisição para executar em serviço local |
+| `error` | Mensagem de erro |
 
 ## Uso com Docker
 
@@ -81,7 +101,7 @@ nano .env
 # Build da imagem
 docker build -t freeceptor-agent .
 
-# Run
+# Run (--network host para acessar serviços locais)
 docker run --env-file .env --network host freeceptor-agent
 ```
 
@@ -106,8 +126,8 @@ docker compose logs -f
 npm install
 
 # Configure as variáveis de ambiente
-export FREECEPTOR_URL=https://freeceptor.example.com
-export SERVER_NAME=my-project
+export FREECEPTOR_URL=http://localhost:3001
+export SERVER_NAME=dev
 export CLIENT_NAME=my-dev-machine
 export LOCAL_SERVICES=api:3000,db:5432
 
@@ -115,33 +135,12 @@ export LOCAL_SERVICES=api:3000,db:5432
 npm run dev
 ```
 
-## Exemplo Prático
-
-### Cenário: Acessar banco de dados de produção remotamente
-
-1. No servidor de produção, configure o agent:
-   ```bash
-   export FREECEPTOR_URL=https://meu-freeceptor.com
-   export SERVER_NAME=producao
-   export CLIENT_NAME=servidor-prod-db
-   export LOCAL_SERVICES=postgres:5432,redis:6379
-   ```
-
-2. Suba o agent:
-   ```bash
-   docker compose up -d
-   ```
-
-3. No frontend do Freeceptor:
-   - Veja o cliente "servidor-prod-db" na lista
-   - Envie requisições para `postgres:5432` ou `redis:6379`
-   - As requisições são executadas localmente no servidor de produção
-
 ## Logs
 
 ```
 ╔═══════════════════════════════════════════════════════════════════╗
 ║       Freeceptor Reverse Proxy Agent v2.0                         ║
+║                  (WebSocket Mode)                                 ║
 ╚═══════════════════════════════════════════════════════════════════╝
 
 Configuration:
@@ -155,7 +154,7 @@ Exposed Local Services:
   - postgres: localhost:5432
   - redis: localhost:6379
 
-Connecting to Freeceptor...
+Connecting to Freeceptor via WebSocket...
 [WebSocket] Connected to Freeceptor
 [WebSocket] Registration successful
 [Request] GET postgres/health (id: req-123)
@@ -167,4 +166,5 @@ Connecting to Freeceptor...
 - O agent só executa requisições para serviços explicitamente configurados em `LOCAL_SERVICES`
 - Use `SERVER_PASSWORD` para proteger o acesso ao seu namespace
 - O agent não expõe portas localmente - toda comunicação passa pelo Freeceptor
-- Considere usar HTTPS entre o agent e o Freeceptor
+- Use HTTPS/WSS em produção para comunicação segura
+- Auto-reconexão com backoff exponencial previne sobrecarga do servidor

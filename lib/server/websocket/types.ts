@@ -1,24 +1,40 @@
+import type { WebSocket } from "ws";
+
 export type ProxyServiceInfo = {
   name: string;
   port: number;
   host: string;
 };
 
+export type ConnectedClient = {
+  clientId: string;
+  clientName: string;
+  serverName: string;
+  localServices: ProxyServiceInfo[];
+  connectedAt: Date;
+  lastHeartbeat: Date;
+  socket: WebSocket;
+};
+
+export type ClientInfo = {
+  clientId: string;
+  clientName: string;
+  serverName: string;
+  localServices: ProxyServiceInfo[];
+  connectedAt: string;
+  lastHeartbeat: string;
+  status: "online" | "offline";
+};
+
 export type WebSocketMessage =
-  | WelcomeMessage
   | RegisterMessage
   | RegisterAckMessage
   | HeartbeatMessage
   | HeartbeatAckMessage
-  | ProxyRequestMessage
-  | ProxyResponseMessage
-  | ErrorMessage;
-
-export type WelcomeMessage = {
-  type: "welcome";
-  message: string;
-  timestamp: string;
-};
+  | RequestMessage
+  | ResponseMessage
+  | ErrorMessage
+  | ClientListMessage;
 
 export type RegisterMessage = {
   type: "register";
@@ -46,7 +62,7 @@ export type HeartbeatAckMessage = {
   timestamp: string;
 };
 
-export type ProxyRequestMessage = {
+export type RequestMessage = {
   type: "request";
   requestId: string;
   targetClientId: string;
@@ -57,7 +73,7 @@ export type ProxyRequestMessage = {
   body: unknown;
 };
 
-export type ProxyResponseMessage = {
+export type ResponseMessage = {
   type: "response";
   requestId: string;
   status: number;
@@ -71,4 +87,16 @@ export type ErrorMessage = {
   requestId?: string;
   message: string;
   code: string;
+};
+
+export type ClientListMessage = {
+  type: "client_list";
+  clients: ClientInfo[];
+};
+
+export type PendingRequest = {
+  requestId: string;
+  resolve: (response: ResponseMessage) => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
 };
