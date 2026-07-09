@@ -44,6 +44,10 @@ export type ApiRouteConfig = {
   proxyToClient?: boolean;
   proxyClientId?: string;
   proxyServiceName?: string;
+  // true when saved explicitly by the user via the UI.
+  // false/undefined for auto-created configs (first call to a route).
+  // Explicit configs override the API-level proxy even when proxyMode is false (mock).
+  explicitlyConfigured?: boolean;
 };
 
 export type ApiConfig = {
@@ -148,6 +152,7 @@ function mapConfig(config: ApiRouteConfig | RouteConfigDoc): ApiRouteConfig {
     proxyToClient: Boolean(config.proxyToClient),
     proxyClientId: config.proxyClientId?.trim() ?? "",
     proxyServiceName: config.proxyServiceName?.trim() ?? "",
+    explicitlyConfigured: Boolean(config.explicitlyConfigured),
   };
 }
 
@@ -372,6 +377,7 @@ export async function setRouteConfig(
         proxyToClient: normalized.proxyToClient,
         proxyClientId: normalized.proxyClientId,
         proxyServiceName: normalized.proxyServiceName,
+        explicitlyConfigured: normalized.explicitlyConfigured ?? false,
       },
     },
     { upsert: true },
@@ -528,13 +534,13 @@ export async function resolveProxyConfig(
   const defaultBody: unknown = { status: "ok" };
   const defaultHeaders: Record<string, string> = {};
 
-  // Route has EXPLICIT proxy config → highest priority, overrides API
   if (routeConfig) {
     const hasRouteProxy =
       (routeConfig.proxyMode && routeConfig.proxyUrl) ||
       (routeConfig.proxyToClient && routeConfig.proxyClientId && routeConfig.proxyServiceName);
 
     if (hasRouteProxy) {
+      // Route has explicit proxy config → highest priority, always overrides API proxy.
       return {
         proxyMode: Boolean(routeConfig.proxyMode),
         proxyUrl: routeConfig.proxyUrl ?? "",
@@ -547,8 +553,25 @@ export async function resolveProxyConfig(
         source: "route",
       };
     }
-    // Route exists but no explicit proxy → fall through to check API config.
-    // A route without proxy should still inherit the API-level proxy if configured.
+
+    if (routeConfig.explicitlyConfigured) {
+      // Route was explicitly set to mock via the UI (proxyMode: false).
+      // Even if the API has a proxy, the user's mock override wins.
+      return {
+        proxyMode: false,
+        proxyUrl: "",
+        proxyToClient: false,
+        proxyClientId: "",
+        proxyServiceName: "",
+        routeStatus: routeConfig.status ?? defaultStatus,
+        routeBody: routeConfig.body ?? defaultBody,
+        routeHeaders: routeConfig.headers ?? defaultHeaders,
+        source: "route",
+      };
+    }
+
+    // Route config was auto-created (first call to this route) and has no explicit proxy.
+    // Fall through so the API-level proxy is still applied for this route.
   }
 
   // Check API-level proxy config (applies when route has no explicit proxy)

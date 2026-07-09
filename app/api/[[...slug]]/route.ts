@@ -217,6 +217,9 @@ async function readRequest(request: Request, context: RouteContext) {
       proxyToClient: false,
       proxyClientId: "",
       proxyServiceName: "",
+      // Auto-created on first call — not explicitly configured by the user.
+      // This allows the API-level proxy to still apply for this route.
+      explicitlyConfigured: false,
     });
   }
 

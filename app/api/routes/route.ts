@@ -75,6 +75,8 @@ export async function POST(request: Request) {
     proxyToClient: Boolean(proxyToClient),
     proxyClientId: proxyClientId?.trim() ?? "",
     proxyServiceName: proxyServiceName?.trim() ?? "",
+    // Saved explicitly by the user via the UI → override API-level proxy even for mock.
+    explicitlyConfigured: true,
   });
 
   return NextResponse.json(config);
