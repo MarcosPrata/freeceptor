@@ -609,13 +609,6 @@ export default function Home() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <a
-              href="/clients"
-              className="flex h-8 items-center gap-1.5 rounded-full border border-zinc-300 bg-white px-3 text-[12px] font-medium text-zinc-700 shadow-sm transition-all duration-150 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
-            >
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              Clientes
-            </a>
             <div className="flex items-center gap-2">
               {activeTab === "routes" && (
                 <>
@@ -744,6 +737,19 @@ export default function Home() {
               >
                 Rotas
               </button>
+              <a
+                href={`/server/${currentServerName}/clients`}
+                className="flex items-center gap-1.5 rounded-full px-3 py-1 text-zinc-500 transition-colors hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+              >
+                <span
+                  className={`h-2 w-2 rounded-full transition-colors ${
+                    connectedClients.some((c) => c.status === "online")
+                      ? "bg-emerald-500"
+                      : "bg-zinc-400"
+                  }`}
+                />
+                Clientes
+              </a>
             </div>
           </div>
         </header>

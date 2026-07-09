@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 type ProxyServiceInfo = {
@@ -52,6 +53,9 @@ function formatRelativeTime(isoString: string): string {
 }
 
 export default function ClientsPage() {
+  const pathname = usePathname();
+  const backHref = pathname.replace(/\/clients$/, "") || "/";
+
   const [clients, setClients] = useState<ProxyClientInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -225,7 +229,7 @@ export default function ClientsPage() {
             </p>
           </div>
           <Link
-            href="/"
+            href={backHref}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
           >
             ← Voltar
