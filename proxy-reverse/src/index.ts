@@ -1,44 +1,53 @@
 import { loadConfig } from "./config.js";
-import { createProxyServer } from "./proxy.js";
+import { FreeceptorHttpClient } from "./http-client.js";
 
 function main() {
   console.log("╔═══════════════════════════════════════════════════════╗");
-  console.log("║         Freeceptor Reverse Proxy Agent                ║");
+  console.log("║       Freeceptor Reverse Proxy Agent v2.0             ║");
   console.log("╚═══════════════════════════════════════════════════════╝");
   console.log();
 
   const config = loadConfig();
 
   console.log("Configuration:");
-  console.log(`  Local Port:     ${config.localPort}`);
+  console.log(`  Client ID:      ${config.clientId}`);
+  console.log(`  Client Name:    ${config.clientName}`);
   console.log(`  Freeceptor URL: ${config.freeceptorUrl}`);
   console.log(`  Server Name:    ${config.serverName}`);
-  console.log(`  Target URL:     ${config.targetUrl}`);
   console.log(`  Verbose:        ${config.verbose}`);
   console.log();
 
-  const server = createProxyServer(config);
+  if (config.localServices.length > 0) {
+    console.log("Exposed Local Services:");
+    for (const service of config.localServices) {
+      console.log(`  - ${service.name}: ${service.host}:${service.port}`);
+    }
+    console.log();
+  } else {
+    console.log("No local services configured.");
+    console.log("Set LOCAL_SERVICES to expose services (e.g., 'api:3000,db:5432')");
+    console.log();
+  }
 
-  server.listen(config.localPort, () => {
-    console.log(`Reverse proxy listening on http://localhost:${config.localPort}`);
-    console.log();
-    console.log("Requests will be:");
-    console.log(`  1. Forwarded to: ${config.targetUrl}`);
-    console.log(`  2. Logged to:    ${config.freeceptorUrl}/api/${config.serverName}/*`);
-    console.log();
-    console.log("Press Ctrl+C to stop.");
-  });
+  const client = new FreeceptorHttpClient(config);
+
+  client.start();
+
+  console.log("Press Ctrl+C to stop.");
+  console.log();
 
   process.on("SIGINT", () => {
     console.log("\nShutting down...");
-    server.close(() => {
+    client.stop();
+    setTimeout(() => {
       console.log("Goodbye!");
       process.exit(0);
-    });
+    }, 1000);
   });
 
   process.on("SIGTERM", () => {
-    server.close(() => process.exit(0));
+    client.stop();
+    setTimeout(() => process.exit(0), 1000);
   });
 }
 

@@ -559,7 +559,7 @@ export default function Home() {
               Freeceptor
             </h1>
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              Toda chamada a <code>/api/{currentServerName}/*</code> aparece aqui em
+              Toda chamada a <code>/api/{currentServerName}/{"*"}</code> aparece aqui em
               tempo real.
             </p>
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
@@ -567,6 +567,13 @@ export default function Home() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            <a
+              href="/clients"
+              className="flex h-8 items-center gap-1.5 rounded-full border border-zinc-300 bg-white px-3 text-[12px] font-medium text-zinc-700 shadow-sm transition-all duration-150 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+            >
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              Clientes
+            </a>
             <div className="flex items-center gap-2">
               {activeTab === "routes" && (
                 <>

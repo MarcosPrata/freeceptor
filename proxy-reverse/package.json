@@ -1,18 +1,16 @@
 {
   "name": "freeceptor-proxy-reverse",
-  "version": "0.1.0",
-  "description": "Reverse proxy agent for Freeceptor - runs locally to intercept and forward requests",
+  "version": "0.2.0",
+  "description": "Reverse proxy agent for Freeceptor - connects to backend and exposes local services",
+  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },
-  "dependencies": {
-    "http-proxy": "^1.18.1"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/http-proxy": "^1.17.14",
     "@types/node": "^20",
     "tsx": "^4.19.0",
     "typescript": "^5"

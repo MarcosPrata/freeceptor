@@ -1,38 +1,71 @@
 # Freeceptor Reverse Proxy Agent
 
-Agente de proxy reverso para o Freeceptor. Roda localmente (em Docker ou Node.js) para interceptar requisições e registrá-las no servidor Freeceptor.
+Agente de proxy reverso para o Freeceptor. Roda localmente (em Docker ou Node.js), mantém conexão persistente com o backend e expõe serviços locais para acesso remoto.
 
 ## Como Funciona
 
 ```
-┌─────────────────┐     ┌─────────────────────┐     ┌─────────────────┐
-│   Sua App       │────▶│   Proxy Reverso     │────▶│   API Real      │
-│   (Cliente)     │     │   (Este Container)  │     │   (TARGET_URL)  │
-└─────────────────┘     └──────────┬──────────┘     └─────────────────┘
-                                   │
-                                   │ Logs
-                                   ▼
-                        ┌─────────────────────┐
-                        │   Freeceptor        │
-                        │   (Backend)         │
-                        └─────────────────────┘
+┌─────────────────┐                              ┌─────────────────┐
+│   Cliente A     │◄────────────────────────────▶│   Cliente B     │
+│  (Este Agent)   │       Via Freeceptor         │  (Outro Agent)  │
+│                 │                              │                 │
+│  Serviços:      │                              │  Serviços:      │
+│  - api:3000     │                              │  - db:5432      │
+│  - web:8080     │                              │  - cache:6379   │
+└────────┬────────┘                              └────────┬────────┘
+         │ WebSocket                                      │ WebSocket
+         │ (conexão persistente)                          │ (conexão persistente)
+         ▼                                                ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                      Freeceptor Backend                            │
+│                                                                    │
+│   - Lista de clientes conectados                                   │
+│   - Roteia requisições entre clientes                              │
+│   - Permite acessar serviços em máquinas remotas                   │
+└───────────────────────────────────────────────────────────────────┘
+                              ▲
+                              │
+                    ┌─────────────────┐
+                    │    Frontend     │
+                    │                 │
+                    │  - Ver clientes │
+                    │  - Enviar req.  │
+                    │  - Ver respostas│
+                    └─────────────────┘
 ```
 
-1. Sua aplicação faz requisições para o proxy local (ex: `http://localhost:8080`)
-2. O proxy encaminha a requisição para a API real (`TARGET_URL`)
-3. A resposta é retornada para sua aplicação
-4. Em paralelo, a requisição e resposta são registradas no Freeceptor
+## Funcionalidades
+
+- **Conexão WebSocket persistente** com o backend Freeceptor
+- **Auto-reconexão** em caso de desconexão
+- **Exposição de serviços locais** para acesso remoto
+- **Heartbeat automático** para manter conexão ativa
+- **Execução de requisições** enviadas pelo backend
 
 ## Configuração
 
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
-| `LOCAL_PORT` | Não | Porta local do proxy (padrão: `8080`) |
+| `CLIENT_ID` | Não | ID único do cliente (auto-gerado se vazio) |
+| `CLIENT_NAME` | Não | Nome legível do cliente (ex: "Servidor Produção") |
 | `FREECEPTOR_URL` | Sim | URL do servidor Freeceptor |
-| `SERVER_NAME` | Sim | Nome do server no Freeceptor |
+| `SERVER_NAME` | Sim | Nome do server/namespace no Freeceptor |
 | `SERVER_PASSWORD` | Não | Senha do server (se configurada) |
-| `TARGET_URL` | Sim | URL da API real para onde as requisições serão encaminhadas |
+| `LOCAL_SERVICES` | Não | Serviços locais para expor (ver formato abaixo) |
 | `VERBOSE` | Não | Habilita logs detalhados (padrão: `false`) |
+| `RECONNECT_INTERVAL` | Não | Intervalo de reconexão em ms (padrão: `5000`) |
+
+### Formato de LOCAL_SERVICES
+
+```bash
+# Formato: name:port ou name:host:port
+# Múltiplos serviços separados por vírgula
+
+# Exemplos:
+LOCAL_SERVICES=api:3000
+LOCAL_SERVICES=api:3000,postgres:5432
+LOCAL_SERVICES=api:localhost:3000,db:192.168.1.100:5432
+```
 
 ## Uso com Docker
 
@@ -46,10 +79,10 @@ cp .env.example .env
 nano .env
 
 # Build da imagem
-docker build -t freeceptor-proxy .
+docker build -t freeceptor-agent .
 
 # Run
-docker run --env-file .env -p 8080:8080 freeceptor-proxy
+docker run --env-file .env --network host freeceptor-agent
 ```
 
 ### Com Docker Compose
@@ -75,7 +108,8 @@ npm install
 # Configure as variáveis de ambiente
 export FREECEPTOR_URL=https://freeceptor.example.com
 export SERVER_NAME=my-project
-export TARGET_URL=https://api.example.com
+export CLIENT_NAME=my-dev-machine
+export LOCAL_SERVICES=api:3000,db:5432
 
 # Rode em modo desenvolvimento
 npm run dev
@@ -83,41 +117,54 @@ npm run dev
 
 ## Exemplo Prático
 
-Suponha que você tem uma aplicação que chama `https://api.stripe.com`:
+### Cenário: Acessar banco de dados de produção remotamente
 
-1. Configure o proxy:
+1. No servidor de produção, configure o agent:
    ```bash
    export FREECEPTOR_URL=https://meu-freeceptor.com
-   export SERVER_NAME=stripe-integration
-   export TARGET_URL=https://api.stripe.com
-   export LOCAL_PORT=8080
+   export SERVER_NAME=producao
+   export CLIENT_NAME=servidor-prod-db
+   export LOCAL_SERVICES=postgres:5432,redis:6379
    ```
 
-2. Suba o proxy:
+2. Suba o agent:
    ```bash
    docker compose up -d
    ```
 
-3. Configure sua aplicação para usar `http://localhost:8080` ao invés de `https://api.stripe.com`
-
-4. Todas as requisições serão:
-   - Encaminhadas para a API real do Stripe
-   - Registradas no Freeceptor para análise
+3. No frontend do Freeceptor:
+   - Veja o cliente "servidor-prod-db" na lista
+   - Envie requisições para `postgres:5432` ou `redis:6379`
+   - As requisições são executadas localmente no servidor de produção
 
 ## Logs
 
-Com `VERBOSE=true`, o proxy exibe logs detalhados:
-
 ```
-[Proxy] POST /v1/customers
-[Proxy] POST /v1/customers -> 200 (145ms)
-[Proxy] GET /v1/charges/ch_xxx
-[Proxy] GET /v1/charges/ch_xxx -> 200 (89ms)
+╔═══════════════════════════════════════════════════════════════════╗
+║       Freeceptor Reverse Proxy Agent v2.0                         ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+Configuration:
+  Client ID:      client-abc123
+  Client Name:    servidor-prod-db
+  Freeceptor URL: https://meu-freeceptor.com
+  Server Name:    producao
+  Verbose:        false
+
+Exposed Local Services:
+  - postgres: localhost:5432
+  - redis: localhost:6379
+
+Connecting to Freeceptor...
+[WebSocket] Connected to Freeceptor
+[WebSocket] Registration successful
+[Request] GET postgres/health (id: req-123)
+[Response] req-123 -> 200
 ```
 
 ## Segurança
 
-- O proxy **não modifica** o conteúdo das requisições
-- Os dados são enviados ao Freeceptor em paralelo, sem bloquear a resposta
-- Use `SERVER_PASSWORD` para proteger seus logs no Freeceptor
-- Em produção, considere usar HTTPS entre o proxy e o Freeceptor
+- O agent só executa requisições para serviços explicitamente configurados em `LOCAL_SERVICES`
+- Use `SERVER_PASSWORD` para proteger o acesso ao seu namespace
+- O agent não expõe portas localmente - toda comunicação passa pelo Freeceptor
+- Considere usar HTTPS entre o agent e o Freeceptor

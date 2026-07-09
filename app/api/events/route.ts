@@ -21,8 +21,6 @@ export async function GET(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
-      let heartbeatId: ReturnType<typeof setInterval> | undefined;
-
       function send(data: unknown) {
         if (closed) return;
         const json = JSON.stringify(data);
@@ -39,14 +37,6 @@ export async function GET(request: Request) {
         controller.enqueue(encoder.encode(": heartbeat\n\n"));
       }
 
-      function closeStream(unsubscribe: () => void) {
-        if (closed) return;
-        closed = true;
-        if (heartbeatId) clearInterval(heartbeatId);
-        unsubscribe();
-        controller.close();
-      }
-
       // envia snapshot inicial
       sendRetryHint(3000);
       send({ type: "snapshot", ...(await getSnapshot(serverName)) });
@@ -57,13 +47,21 @@ export async function GET(request: Request) {
       });
 
       // heartbeat evita timeout silencioso em conexões longas
-      heartbeatId = setInterval(() => {
+      const heartbeatId = setInterval(() => {
         sendHeartbeat();
       }, 15000);
 
+      function closeStream() {
+        if (closed) return;
+        closed = true;
+        clearInterval(heartbeatId);
+        unsubscribe();
+        controller.close();
+      }
+
       // encerra quando o cliente desconectar
       signal.addEventListener("abort", () => {
-        closeStream(unsubscribe);
+        closeStream();
       });
     },
     cancel() {
