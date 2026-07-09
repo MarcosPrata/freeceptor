@@ -6,7 +6,7 @@ import type {
   WebSocketMessage,
   ResponseMessage,
   PendingRequest,
-} from "./types.js";
+} from "./types";
 
 class ClientManager {
   private clients: Map<string, ConnectedClient> = new Map();
@@ -219,4 +219,11 @@ class ClientManager {
   }
 }
 
-export const clientManager = new ClientManager();
+declare global {
+  // eslint-disable-next-line no-var
+  var __freeceptorClientManager: ClientManager | undefined;
+}
+
+export const clientManager =
+  globalThis.__freeceptorClientManager ??
+  (globalThis.__freeceptorClientManager = new ClientManager());

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
@@ -64,31 +64,56 @@ export default function ClientsPage() {
   const [sending, setSending] = useState(false);
   const [requestResult, setRequestResult] = useState<SendRequestResult | null>(null);
 
-  const fetchClients = useCallback(async () => {
-    try {
-      const res = await fetch("/api/proxy/clients");
-      if (!res.ok) {
-        if (res.status === 401) {
+  useEffect(() => {
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    let attempt = 0;
+
+    function connect() {
+      if (cancelled) return;
+      es = new EventSource("/api/events/clients");
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as { clients?: ProxyClientInfo[] };
+          if (!cancelled && data.clients) {
+            setClients(data.clients);
+            setError(null);
+            setLoading(false);
+            attempt = 0;
+          }
+        } catch {
+          // ignorar mensagens mal formadas
+        }
+      };
+
+      es.onerror = (e) => {
+        if (cancelled) return;
+        es?.close();
+        es = null;
+
+        const status = (e as unknown as { status?: number }).status;
+        if (status === 401) {
           setError("Você precisa estar autenticado. Faça login na página principal.");
+          setLoading(false);
           return;
         }
-        throw new Error(await res.text());
-      }
-      const data = await res.json();
-      setClients(data.clients || []);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao carregar clientes");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
-  useEffect(() => {
-    fetchClients();
-    const interval = setInterval(fetchClients, 5000);
-    return () => clearInterval(interval);
-  }, [fetchClients]);
+        const delay = Math.min(1000 * 2 ** attempt, 10000);
+        attempt += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      };
+    }
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      es?.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+  }, []);
 
   useEffect(() => {
     if (selectedClient && selectedClient.localServices.length > 0 && !selectedService) {

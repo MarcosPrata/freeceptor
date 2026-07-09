@@ -4,6 +4,7 @@ import {
   subscribeToChanges,
 } from "@/lib/server/request-log";
 import { getServerFromCookie } from "@/lib/server/server-session";
+import { clientManager } from "@/lib/server/websocket";
 
 export const dynamic = "force-dynamic";
 
@@ -39,11 +40,25 @@ export async function GET(request: Request) {
 
       // envia snapshot inicial
       sendRetryHint(3000);
-      send({ type: "snapshot", ...(await getSnapshot(serverName)) });
+      const snapshot = await getSnapshot(serverName);
+      send({
+        type: "snapshot",
+        ...snapshot,
+        clients: clientManager.getClientsByServer(serverName),
+      });
 
-      // assina mudanças
+      // assina mudanças de logs/routes
       const unsubscribe = subscribeToChanges(serverName, (payload) => {
         send({ type: "update", ...payload });
+      });
+
+      // assina mudanças de clientes WebSocket
+      const unsubscribeClients = clientManager.onClientUpdate((updatedServer) => {
+        if (updatedServer !== serverName) return;
+        send({
+          type: "clients",
+          clients: clientManager.getClientsByServer(serverName),
+        });
       });
 
       // heartbeat evita timeout silencioso em conexões longas
@@ -56,6 +71,7 @@ export async function GET(request: Request) {
         closed = true;
         clearInterval(heartbeatId);
         unsubscribe();
+        unsubscribeClients();
         controller.close();
       }
 

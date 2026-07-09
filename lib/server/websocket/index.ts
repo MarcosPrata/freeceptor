@@ -3,11 +3,11 @@ export {
   getWebSocketServer,
   closeWebSocketServer,
   clientManager,
-} from "./server.js";
+} from "./server";
 
 export type {
   WebSocketServerConfig,
-} from "./server.js";
+} from "./server";
 
 export type {
   ConnectedClient,
@@ -23,4 +23,4 @@ export type {
   ErrorMessage,
   ClientListMessage,
   PendingRequest,
-} from "./types.js";
+} from "./types";

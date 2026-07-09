@@ -126,7 +126,9 @@ docker compose logs -f
 npm install
 
 # Configure as variáveis de ambiente
-export FREECEPTOR_URL=http://localhost:3001
+# Docker Mac = export FREECEPTOR_URL=http://host.docker.internal:3002
+# Docker Linux = export FREECEPTOR_URL=http://172.17.0.1:3002
+export FREECEPTOR_URL=http://host.docker.internal:3002
 export SERVER_NAME=dev
 export CLIENT_NAME=my-dev-machine
 export LOCAL_SERVICES=api:3000,db:5432

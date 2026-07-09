@@ -1,8 +1,8 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "http";
 import type { Server as HttpServer } from "http";
-import { handleMessage, handleDisconnect } from "./message-handler.js";
-import { clientManager } from "./client-manager.js";
+import { handleMessage, handleDisconnect } from "./message-handler";
+import { clientManager } from "./client-manager";
 
 let wss: WebSocketServer | null = null;
 let cleanupInterval: NodeJS.Timeout | null = null;

@@ -1,6 +1,6 @@
 import type { WebSocket } from "ws";
-import { clientManager } from "./client-manager.js";
-import { verifyOrCreateServerConfig } from "../server-config.js";
+import { clientManager } from "./client-manager";
+import { verifyOrCreateServerConfig } from "../server-config";
 import type {
   WebSocketMessage,
   RegisterMessage,
@@ -9,7 +9,7 @@ import type {
   RegisterAckMessage,
   HeartbeatAckMessage,
   ErrorMessage,
-} from "./types.js";
+} from "./types";
 
 function send(socket: WebSocket, message: WebSocketMessage): void {
   if (socket.readyState === 1) {

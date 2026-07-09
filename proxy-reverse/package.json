@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "sh -c 'set -a; [ -f .env ] && source .env; set +a; node --import tsx/esm --watch src/index.ts'",
     "build": "tsc",
     "start": "node dist/index.js"
   },

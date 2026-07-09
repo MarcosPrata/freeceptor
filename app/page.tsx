@@ -443,13 +443,13 @@ export default function Home() {
             type?: string;
             logs?: ApiRequestLog[];
             routes?: ApiRouteStat[];
+            clients?: ProxyClientInfo[];
           };
-          // ignora mensagens sem payload de snapshot/update
-          if (!data.logs || !data.routes) return;
           if (!cancelled) {
-            setLogs(data.logs);
-            setRoutes(data.routes);
-            setLoading(false);
+            if (data.logs) setLogs(data.logs);
+            if (data.routes) setRoutes(data.routes);
+            if (data.clients) setConnectedClients(data.clients);
+            if (data.logs || data.routes) setLoading(false);
           }
         } catch (err) {
           if (!cancelled) {
@@ -487,25 +487,6 @@ export default function Home() {
     };
   }, [authenticated]);
 
-  useEffect(() => {
-    if (!authenticated) return;
-
-    async function loadClients() {
-      try {
-        const res = await fetch("/api/proxy/clients");
-        if (res.ok) {
-          const data = await res.json();
-          setConnectedClients(data.clients || []);
-        }
-      } catch {
-        // Ignore errors loading clients
-      }
-    }
-
-    loadClients();
-    const interval = setInterval(loadClients, 10000);
-    return () => clearInterval(interval);
-  }, [authenticated]);
 
   if (!sessionReady) {
     return (

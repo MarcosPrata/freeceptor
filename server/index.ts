@@ -1,11 +1,11 @@
 import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
-import { createWebSocketServer, closeWebSocketServer } from "../lib/server/websocket/index.js";
+import { createWebSocketServer, closeWebSocketServer } from "../lib/server/websocket/index";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME || "localhost";
-const port = parseInt(process.env.PORT || "3001", 10);
+const port = parseInt(process.env.PORT || "3002", 10);
 const wsPath = process.env.WS_PATH || "/ws";
 
 const app = next({ dev, hostname, port });
