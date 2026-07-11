@@ -237,6 +237,23 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [configProxyServiceName, setConfigProxyServiceName] = useState("");
   const [connectedClients, setConnectedClients] = useState<ProxyClientInfo[]>([]);
   const [configMessage, setConfigMessage] = useState<string | null>(null);
+  const [showAddRouteForm, setShowAddRouteForm] = useState(false);
+  const [newRouteMethod, setNewRouteMethod] = useState("GET");
+  const [newRoutePath, setNewRoutePath] = useState("/");
+  const [newRouteError, setNewRouteError] = useState<string | null>(null);
+  const [newRouteSaving, setNewRouteSaving] = useState(false);
+  const [wildcardModal, setWildcardModal] = useState<{
+    route: ApiRouteStat;
+    newPath: string;
+    affectedRoutes: ApiRouteStat[];
+  } | null>(null);
+  const [wildcardConverting, setWildcardConverting] = useState(false);
+  const [editingWildcardSegment, setEditingWildcardSegment] = useState<{
+    routeId: string;
+    segIndex: number;
+    value: string;
+  } | null>(null);
+  const [segmentEditSaving, setSegmentEditSaving] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const [importFileName, setImportFileName] = useState<string | null>(null);
@@ -511,6 +528,211 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       // If no match AND !apiHasProxy: stays "disabled" (mock as default)
     } catch (err) {
       console.error("Erro ao carregar config da rota:", err);
+    }
+  }
+
+  async function convertToWildcard(
+    sourceRoute: ApiRouteStat,
+    newPath: string,
+    affectedRoutes: ApiRouteStat[],
+  ) {
+    setWildcardConverting(true);
+    try {
+      let config: ApiRouteConfig = {
+        apiName: selectedApi,
+        method: sourceRoute.method,
+        path: sourceRoute.path,
+        status: 200,
+        body: { status: "ok" },
+        headers: {},
+        proxyMode: false,
+        proxyUrl: "",
+        proxyToClient: false,
+        proxyClientId: "",
+        proxyServiceName: "",
+      };
+
+      const configsRes = await fetch(
+        `/api/routes/configs?apiName=${encodeURIComponent(selectedApi)}`,
+      );
+      if (configsRes.ok) {
+        const configs = (await configsRes.json()) as ApiRouteConfig[];
+        const match = configs.find(
+          (cfg) =>
+            cfg.method.toUpperCase() === sourceRoute.method.toUpperCase() &&
+            normalizePathFront(cfg.path) === normalizePathFront(sourceRoute.path),
+        );
+        if (match) config = match;
+      }
+
+      const postRes = await fetch("/api/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiName: selectedApi,
+          method: sourceRoute.method,
+          path: newPath,
+          status: config.status ?? 200,
+          headers: config.headers ?? {},
+          responseBody: config.body ?? { status: "ok" },
+          proxyMode: config.proxyMode ?? false,
+          proxyUrl: config.proxyUrl ?? "",
+          proxyToClient: config.proxyToClient ?? false,
+          proxyClientId: config.proxyClientId ?? "",
+          proxyServiceName: config.proxyServiceName ?? "",
+        }),
+      });
+      if (!postRes.ok) throw new Error(await postRes.text());
+
+      const toDelete = [sourceRoute, ...affectedRoutes];
+      await Promise.all(
+        toDelete.map((r) =>
+          fetch("/api/routes", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              apiName: selectedApi,
+              method: r.method,
+              path: r.path,
+            }),
+          }),
+        ),
+      );
+
+      if (configRouteId === sourceRoute.id) setConfigRouteId(null);
+      setWildcardModal(null);
+
+      const routesRes = await fetch(
+        `/api/routes?apiName=${encodeURIComponent(selectedApi)}`,
+      );
+      if (routesRes.ok) {
+        setRoutes((await routesRes.json()) as ApiRouteStat[]);
+      }
+    } catch (err) {
+      console.error("Erro ao converter para coringa:", err);
+    } finally {
+      setWildcardConverting(false);
+    }
+  }
+
+  async function handleSegmentClick(
+    route: ApiRouteStat,
+    segIndex: number,
+    segments: string[],
+  ) {
+    if (segments[segIndex] === "*") return;
+
+    const newSegments = [...segments];
+    newSegments[segIndex] = "*";
+    const newPath = `/${newSegments.join("/")}`;
+
+    if (normalizePathFront(route.path) === normalizePathFront(newPath)) return;
+
+    try {
+      const params = new URLSearchParams({
+        apiName: selectedApi,
+        method: route.method,
+        path: newPath,
+        excludePath: route.path,
+      });
+      const res = await fetch(`/api/routes/wildcard-preview?${params}`);
+      if (!res.ok) throw new Error(await res.text());
+      const affected = (await res.json()) as ApiRouteStat[];
+      setWildcardModal({ route, newPath, affectedRoutes: affected });
+    } catch (err) {
+      console.error("Erro ao preview wildcard:", err);
+    }
+  }
+
+  async function convertWildcardToFixed(
+    route: ApiRouteStat,
+    segIndex: number,
+    segments: string[],
+    fixedValue: string,
+  ) {
+    const trimmed = fixedValue.trim();
+    if (!trimmed || trimmed.includes("/") || trimmed.includes("*")) return;
+
+    const newSegments = [...segments];
+    newSegments[segIndex] = trimmed;
+    const newPath = `/${newSegments.join("/")}`;
+
+    if (normalizePathFront(route.path) === normalizePathFront(newPath)) {
+      setEditingWildcardSegment(null);
+      return;
+    }
+
+    setSegmentEditSaving(true);
+    try {
+      let config: ApiRouteConfig = {
+        apiName: selectedApi,
+        method: route.method,
+        path: route.path,
+        status: 200,
+        body: { status: "ok" },
+        headers: {},
+        proxyMode: false,
+        proxyUrl: "",
+        proxyToClient: false,
+        proxyClientId: "",
+        proxyServiceName: "",
+      };
+
+      const configsRes = await fetch(
+        `/api/routes/configs?apiName=${encodeURIComponent(selectedApi)}`,
+      );
+      if (configsRes.ok) {
+        const configs = (await configsRes.json()) as ApiRouteConfig[];
+        const match = configs.find(
+          (cfg) =>
+            cfg.method.toUpperCase() === route.method.toUpperCase() &&
+            normalizePathFront(cfg.path) === normalizePathFront(route.path),
+        );
+        if (match) config = match;
+      }
+
+      const postRes = await fetch("/api/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiName: selectedApi,
+          method: route.method,
+          path: newPath,
+          status: config.status ?? 200,
+          headers: config.headers ?? {},
+          responseBody: config.body ?? { status: "ok" },
+          proxyMode: config.proxyMode ?? false,
+          proxyUrl: config.proxyUrl ?? "",
+          proxyToClient: config.proxyToClient ?? false,
+          proxyClientId: config.proxyClientId ?? "",
+          proxyServiceName: config.proxyServiceName ?? "",
+        }),
+      });
+      if (!postRes.ok) throw new Error(await postRes.text());
+
+      await fetch("/api/routes", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiName: selectedApi,
+          method: route.method,
+          path: route.path,
+        }),
+      });
+
+      if (configRouteId === route.id) setConfigRouteId(null);
+      setEditingWildcardSegment(null);
+
+      const routesRes = await fetch(
+        `/api/routes?apiName=${encodeURIComponent(selectedApi)}`,
+      );
+      if (routesRes.ok) {
+        setRoutes((await routesRes.json()) as ApiRouteStat[]);
+      }
+    } catch (err) {
+      console.error("Erro ao converter coringa para termo fixo:", err);
+    } finally {
+      setSegmentEditSaving(false);
     }
   }
 
@@ -1454,17 +1676,163 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                 ))}
 
                 {!loading && logs.length === 0 && (
-                  <div className="rounded border border-dashed border-zinc-300 px-3 py-6 text-center text-xs text-zinc-500 dark:border-zinc-700">
-                    Nenhuma requisição registrada ainda. Faça um{" "}
-                    <code className="mx-1 rounded bg-zinc-100 px-1 py-0.5 font-mono text-[11px] dark:bg-zinc-900">
-                      GET /api/{currentServerName}/{selectedApi}/qualquer/coisa
-                    </code>{" "}
-                    e veja aparecer aqui.
+                  <div className="flex items-center gap-3 rounded border border-dashed border-zinc-300 px-3 py-6 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-500">
+                    <svg className="ml-2 shrink-0 text-zinc-400 dark:text-zinc-600" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+                      <path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" />
+                    </svg>
+                    Nenhuma requisição recebida ainda.
                   </div>
                 )}
               </div>
             ) : (
               <div className="space-y-3 p-3">
+                {/* Add-route card — always at the top */}
+                {!loading && (
+                  <div>
+                    {!showAddRouteForm ? (
+                      routes.length === 0 ? (
+                        /* Empty state — full-width dashed card */
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewRoutePath("/");
+                            setNewRouteMethod("GET");
+                            setNewRouteError(null);
+                            setShowAddRouteForm(true);
+                          }}
+                          className="group w-full cursor-pointer rounded border border-dashed border-zinc-300 px-3 py-6 text-left transition-colors hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600 dark:hover:text-zinc-300"
+                        >
+                          <span className="flex items-center gap-3">
+                            <svg className="ml-2 shrink-0 text-zinc-400 transition-colors group-hover:text-zinc-500 dark:text-zinc-600 dark:group-hover:text-zinc-300" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="12" y1="5" x2="12" y2="19" />
+                              <line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                            <span className="text-xs text-zinc-500 transition-colors dark:text-zinc-500 dark:group-hover:text-zinc-300">
+                              Faça uma chamada para a API ou adicione uma rota manualmente clicando aqui.
+                            </span>
+                          </span>
+                        </button>
+                      ) : (
+                        /* Compact — same full-width dashed card layout as empty state */
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewRoutePath("/");
+                            setNewRouteMethod("GET");
+                            setNewRouteError(null);
+                            setShowAddRouteForm(true);
+                          }}
+                          className="group w-full cursor-pointer rounded border border-dashed border-zinc-300 px-3 py-6 text-left transition-colors hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600 dark:hover:text-zinc-300"
+                        >
+                          <span className="flex items-center gap-3">
+                            <svg className="ml-2 shrink-0 text-zinc-400 transition-colors group-hover:text-zinc-500 dark:text-zinc-600 dark:group-hover:text-zinc-300" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="12" y1="5" x2="12" y2="19" />
+                              <line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                            <span className="text-xs text-zinc-500 transition-colors dark:text-zinc-500 dark:group-hover:text-zinc-300">
+                              Faça uma chamada para a API ou adicione uma rota manualmente clicando aqui.
+                            </span>
+                          </span>
+                        </button>
+                      )
+                    ) : (
+                      <div className="rounded border border-zinc-200 bg-zinc-50 px-3 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+                        <p className="mb-2 text-[11px] font-medium text-zinc-500">Nova rota</p>
+                        <form
+                          className="flex flex-wrap items-center gap-2"
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            const trimmedPath = newRoutePath.trim();
+                            if (!trimmedPath || trimmedPath === "") {
+                              setNewRouteError("Informe o path da rota.");
+                              return;
+                            }
+                            const normalizedPath = trimmedPath.startsWith("/")
+                              ? trimmedPath
+                              : `/${trimmedPath}`;
+                            setNewRouteSaving(true);
+                            setNewRouteError(null);
+                            try {
+                              const res = await fetch("/api/routes", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  apiName: selectedApi,
+                                  method: newRouteMethod,
+                                  path: normalizedPath,
+                                  status: 200,
+                                  headers: {},
+                                  responseBody: { status: "ok" },
+                                  proxyMode: false,
+                                  proxyUrl: "",
+                                  proxyToClient: false,
+                                  proxyClientId: "",
+                                  proxyServiceName: "",
+                                }),
+                              });
+                              if (!res.ok) {
+                                const text = await res.text();
+                                throw new Error(text);
+                              }
+                              setShowAddRouteForm(false);
+                              setNewRoutePath("/");
+                              setNewRouteMethod("GET");
+                              // Refresh the routes list immediately without waiting for SSE
+                              try {
+                                const routesRes = await fetch(`/api/routes?apiName=${encodeURIComponent(selectedApi)}`);
+                                if (routesRes.ok) {
+                                  setRoutes(await routesRes.json() as ApiRouteStat[]);
+                                }
+                              } catch { /* non-fatal, SSE will catch it */ }
+                            } catch (err) {
+                              setNewRouteError(
+                                err instanceof Error ? err.message : "Erro ao criar rota.",
+                              );
+                            } finally {
+                              setNewRouteSaving(false);
+                            }
+                          }}
+                        >
+                          <select
+                            value={newRouteMethod}
+                            onChange={(e) => setNewRouteMethod(e.target.value)}
+                            className="h-7 rounded border border-zinc-300 bg-white px-1.5 font-mono text-[11px] font-semibold text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                          >
+                            {["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"].map((m) => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                          <input
+                            type="text"
+                            autoFocus
+                            value={newRoutePath}
+                            onChange={(e) => setNewRoutePath(e.target.value)}
+                            placeholder="/caminho/da/rota"
+                            className="h-7 min-w-48 flex-1 rounded border border-zinc-300 bg-white px-2 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                          />
+                          <button
+                            type="submit"
+                            disabled={newRouteSaving}
+                            className="h-7 rounded bg-zinc-900 px-3 text-[11px] font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                          >
+                            {newRouteSaving ? "Criando…" : "Criar rota"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowAddRouteForm(false)}
+                            className="h-7 rounded border border-zinc-200 px-3 text-[11px] text-zinc-500 hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-300"
+                          >
+                            Cancelar
+                          </button>
+                          {newRouteError && (
+                            <span className="w-full text-[11px] text-red-500">{newRouteError}</span>
+                          )}
+                        </form>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {routes.map((route) => (
                   <div
                     key={route.id}
@@ -1496,10 +1864,95 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                         {route.method}
                       </span>
                       <span className="font-mono text-[11px]">
-                        {route.path
-                          .split("/")
-                          .filter(Boolean)
-                          .join(" / ") || "-"}
+                        {(() => {
+                          const segments = route.path.split("/").filter(Boolean);
+                          if (segments.length === 0) return "-";
+                          return segments.map((seg, i) => (
+                            <span key={`${route.id}-${i}`}>
+                              {seg === "*" ? (
+                                editingWildcardSegment?.routeId === route.id &&
+                                editingWildcardSegment.segIndex === i ? (
+                                  <form
+                                    className="inline-flex items-center gap-1"
+                                    onClick={(e) => e.stopPropagation()}
+                                    onSubmit={(e) => {
+                                      e.preventDefault();
+                                      void convertWildcardToFixed(
+                                        route,
+                                        i,
+                                        segments,
+                                        editingWildcardSegment.value,
+                                      );
+                                    }}
+                                  >
+                                    <input
+                                      autoFocus
+                                      type="text"
+                                      placeholder="termo"
+                                      className="h-5 w-24 rounded border border-zinc-300 bg-white px-1.5 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                                      value={editingWildcardSegment.value}
+                                      onChange={(e) =>
+                                        setEditingWildcardSegment((prev) =>
+                                          prev ? { ...prev, value: e.target.value } : null,
+                                        )
+                                      }
+                                      disabled={segmentEditSaving}
+                                    />
+                                    <button
+                                      type="submit"
+                                      disabled={segmentEditSaving}
+                                      className="inline-flex h-5 w-5 items-center justify-center rounded bg-zinc-900 text-zinc-50 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
+                                      aria-label="Confirmar"
+                                    >
+                                      <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <path d="M5 13l4 4L19 7" />
+                                      </svg>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={segmentEditSaving}
+                                      onClick={() => setEditingWildcardSegment(null)}
+                                      className="text-[11px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                                    >
+                                      ×
+                                    </button>
+                                  </form>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="rounded bg-amber-100 px-1 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60"
+                                    title="Clique para definir um termo fixo"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingWildcardSegment({
+                                        routeId: route.id,
+                                        segIndex: i,
+                                        value: "",
+                                      });
+                                    }}
+                                  >
+                                    *
+                                  </button>
+                                )
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="text-zinc-800 hover:text-blue-600 hover:underline dark:text-zinc-200 dark:hover:text-blue-400"
+                                  title="Clique para converter em coringa"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void handleSegmentClick(route, i, segments);
+                                  }}
+                                >
+                                  {seg}
+                                </button>
+                              )}
+                              {i < segments.length - 1 && (
+                                <span className="text-zinc-400"> / </span>
+                              )}
+                            </span>
+                          ));
+                        })()}
                       </span>
                       <span className="text-[11px] text-zinc-600 dark:text-zinc-300">
                         chamadas: {route.count}
@@ -1516,8 +1969,11 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                           className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-300 text-[11px] text-zinc-600 hover:bg-red-50 hover:text-red-700 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-red-900/40 dark:hover:text-red-200"
                           onClick={async (e) => {
                             e.stopPropagation();
+                            // Optimistic update — remove from UI immediately
+                            setRoutes((prev) => prev.filter((r) => r.id !== route.id));
+                            if (configRouteId === route.id) setConfigRouteId(null);
                             try {
-                              const res = await fetch("/api/routes", {
+                              await fetch("/api/routes", {
                                 method: "DELETE",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
@@ -1526,31 +1982,12 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                   path: route.path,
                                 }),
                               });
-
-                              if (!res.ok) {
-                                const text = await res.text();
-                                throw new Error(text);
-                              }
-
-                              const payload = (await res.json()) as { ok: boolean };
-                              setConfigRouteId(route.id);
-                              setConfigStatus("200");
-                              setConfigBody('{"status":"ok"}');
-                              setConfigHeaders("{}");
-                              setConfigProxyModeType("disabled");
-                              setConfigProxyUrl("");
-                              setConfigMessage(
-                                payload.ok
-                                  ? "Configuração removida com sucesso."
-                                  : "Essa rota não possui configuração salva.",
-                              );
                             } catch (err) {
-                              setConfigRouteId(route.id);
-                              setConfigMessage(
-                                err instanceof Error
-                                  ? `Erro ao remover configuração: ${err.message}`
-                                  : "Erro ao remover configuração",
-                              );
+                              console.error("Erro ao deletar rota:", err);
+                              // Restore the route if the request failed
+                              setRoutes((prev) => [...prev, route].sort((a, b) =>
+                                a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path)
+                              ));
                             }
                           }}
                         >
@@ -1864,15 +2301,6 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                     )}
                   </div>
                 ))}
-                {!loading && routes.length === 0 && (
-                  <div className="rounded border border-dashed border-zinc-300 px-3 py-6 text-center text-xs text-zinc-500 dark:border-zinc-700">
-                    Nenhuma rota registrada ainda. Faça uma chamada para{" "}
-                    <code className="mx-1 rounded bg-zinc-100 px-1 py-0.5 font-mono text-[11px] dark:bg-zinc-900">
-                      /api/{currentServerName}/{selectedApi}/alguma/coisa
-                    </code>{" "}
-                    e veja aparecer aqui.
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -1880,6 +2308,71 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           )}
         </section>
       </main>
+
+      {/* Wildcard merge confirmation modal */}
+      {wildcardModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              Converter para coringa?
+            </h2>
+            <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+              O segmento será convertido em{" "}
+              <code className="rounded bg-zinc-100 px-1 font-mono text-[10px] dark:bg-zinc-900">
+                {wildcardModal.newPath}
+              </code>
+              {wildcardModal.affectedRoutes.length > 0
+                ? ". As rotas abaixo serão mescladas em uma única configuração."
+                : "."}
+            </p>
+            <ul className="mt-3 max-h-40 space-y-1 overflow-y-auto rounded border border-zinc-200 bg-zinc-50 p-2 text-[11px] dark:border-zinc-800 dark:bg-zinc-900">
+              <li className="font-mono text-zinc-700 dark:text-zinc-300">
+                {wildcardModal.route.method}{" "}
+                {wildcardModal.route.path.split("/").filter(Boolean).join(" / ")}
+              </li>
+              {wildcardModal.affectedRoutes.map((r) => (
+                <li key={r.id} className="font-mono text-zinc-600 dark:text-zinc-400">
+                  {r.method} {r.path.split("/").filter(Boolean).join(" / ")}
+                  {r.count > 0 && (
+                    <span className="ml-1 text-zinc-400">({r.count} chamadas)</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-xs font-medium text-amber-700 dark:text-amber-300">
+              {wildcardModal.affectedRoutes.length > 0
+                ? "Essa ação é irreversível. Todas as configurações individuais serão substituídas por "
+                : "A configuração desta rota passará a valer para qualquer valor neste segmento ("}
+              <code className="font-mono">{wildcardModal.newPath}</code>
+              {wildcardModal.affectedRoutes.length > 0 ? "." : ")."}
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={wildcardConverting}
+                onClick={() => setWildcardModal(null)}
+                className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={wildcardConverting}
+                onClick={() =>
+                  void convertToWildcard(
+                    wildcardModal.route,
+                    wildcardModal.newPath,
+                    wildcardModal.affectedRoutes,
+                  )
+                }
+                className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+              >
+                {wildcardConverting ? "Convertendo…" : "Confirmar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete API confirmation modal */}
       {deleteApiName && (

@@ -133,6 +133,45 @@ function configKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
 }
 
+/**
+ * Returns true if requestPath matches patternPath, where `*` in the pattern
+ * matches any single path segment. Both paths must have the same segment count.
+ * Examples:
+ *   pathMatchesPattern("/posts/1", "/posts/*") → true
+ *   pathMatchesPattern("/posts/1/comments", "/posts/*") → false (different depth)
+ *   pathMatchesPattern("/posts/1", "/posts/1") → true (exact)
+ */
+export function pathMatchesPattern(requestPath: string, patternPath: string): boolean {
+  const req = requestPath.split("/").filter(Boolean);
+  const pat = patternPath.split("/").filter(Boolean);
+  if (req.length !== pat.length) return false;
+  return req.every((seg, i) => pat[i] === "*" || pat[i] === seg);
+}
+
+/**
+ * Specificity score: higher = fewer wildcards = more specific.
+ * Used to pick the best-matching wildcard pattern when multiple match.
+ */
+function patternSpecificity(path: string): number {
+  return path.split("/").filter((s) => s !== "*" && Boolean(s)).length;
+}
+
+function mergeStatInto(target: ApiRouteStat, source: ApiRouteStat): void {
+  target.count += source.count;
+  if (
+    source.firstTimestamp &&
+    (!target.firstTimestamp || source.firstTimestamp < target.firstTimestamp)
+  ) {
+    target.firstTimestamp = source.firstTimestamp;
+  }
+  if (
+    source.lastTimestamp &&
+    (!target.lastTimestamp || source.lastTimestamp > target.lastTimestamp)
+  ) {
+    target.lastTimestamp = source.lastTimestamp;
+  }
+}
+
 function parseLogIndexFromId(id: string): number {
   const [head] = id.split(":");
   const value = Number(head);
@@ -321,12 +360,16 @@ export async function getRouteStatsWithConfigs(
     getRouteStats(serverName, normalizedApi),
     getAllRouteConfigs(serverName, normalizedApi),
   ]);
-  const map = new Map<string, ApiRouteStat>();
 
-  for (const stat of baseStats) {
-    map.set(`${stat.method} ${stat.path}`, stat);
+  const configByKey = new Map<string, ApiRouteConfig>();
+  for (const cfg of configs) {
+    configByKey.set(configKey(cfg.method, cfg.path), cfg);
   }
 
+  const wildcardConfigs = configs.filter((c) => c.path.includes("*"));
+  const map = new Map<string, ApiRouteStat>();
+
+  // Seed entries for every configured route (including wildcards with count 0).
   for (const cfg of configs) {
     const key = configKey(cfg.method, cfg.path);
     if (!map.has(key)) {
@@ -342,11 +385,114 @@ export async function getRouteStatsWithConfigs(
     }
   }
 
+  for (const stat of baseStats) {
+    const normalizedStatPath = normalizePath(stat.path);
+    const statKey = configKey(stat.method, normalizedStatPath);
+
+    // Exact config exists → keep stat on its own entry (exact beats wildcard).
+    const exactConfig = configByKey.get(statKey);
+    if (exactConfig && normalizePath(exactConfig.path) === normalizedStatPath) {
+      const existing = map.get(statKey);
+      if (existing) {
+        mergeStatInto(existing, stat);
+      } else {
+        map.set(statKey, { ...stat, path: normalizedStatPath });
+      }
+      continue;
+    }
+
+    // No exact config → merge into best matching wildcard config if any.
+    const matchingWildcards = wildcardConfigs
+      .filter(
+        (c) =>
+          c.method.toUpperCase() === stat.method.toUpperCase() &&
+          pathMatchesPattern(normalizedStatPath, c.path),
+      )
+      .sort((a, b) => patternSpecificity(b.path) - patternSpecificity(a.path));
+
+    if (matchingWildcards.length > 0) {
+      const best = matchingWildcards[0];
+      const wildcardKey = configKey(best.method, best.path);
+      const existing = map.get(wildcardKey) ?? {
+        id: wildcardKey,
+        method: best.method.toUpperCase(),
+        path: normalizePath(best.path),
+        apiName: normalizedApi,
+        count: 0,
+        firstTimestamp: "",
+        lastTimestamp: "",
+      };
+      mergeStatInto(existing, stat);
+      map.set(wildcardKey, existing);
+      continue;
+    }
+
+    // No config covers this stat — show as standalone discovered route.
+    map.set(statKey, { ...stat, path: normalizedStatPath });
+  }
+
   return Array.from(map.values()).sort((a, b) =>
     a.path === b.path
       ? a.method.localeCompare(b.method)
       : a.path.localeCompare(b.path),
   );
+}
+
+/**
+ * Returns routes (stats + configs) that would be absorbed by converting to a wildcard pattern.
+ * Used by the UI merge confirmation modal before converting a path segment to `*`.
+ */
+export async function getRoutesAffectedByWildcard(
+  serverName: string,
+  apiName: string,
+  method: string,
+  patternPath: string,
+  excludePath?: string,
+): Promise<ApiRouteStat[]> {
+  const normalizedApi = normalizeApiName(apiName);
+  const normalizedPattern = normalizePath(patternPath);
+  const normalizedExclude = excludePath ? normalizePath(excludePath) : undefined;
+  const upperMethod = method.toUpperCase();
+
+  const [stats, configs] = await Promise.all([
+    getRouteStats(serverName, normalizedApi),
+    getAllRouteConfigs(serverName, normalizedApi),
+  ]);
+
+  const routeMap = new Map<string, ApiRouteStat>();
+
+  for (const stat of stats) {
+    routeMap.set(configKey(stat.method, stat.path), stat);
+  }
+
+  for (const cfg of configs) {
+    const key = configKey(cfg.method, cfg.path);
+    if (!routeMap.has(key)) {
+      routeMap.set(key, {
+        id: key,
+        method: cfg.method.toUpperCase(),
+        path: normalizePath(cfg.path),
+        apiName: normalizedApi,
+        count: 0,
+        firstTimestamp: "",
+        lastTimestamp: "",
+      });
+    }
+  }
+
+  return Array.from(routeMap.values())
+    .filter((route) => {
+      if (route.method.toUpperCase() !== upperMethod) return false;
+      const routePath = normalizePath(route.path);
+      if (routePath === normalizedPattern) return false;
+      if (normalizedExclude && routePath === normalizedExclude) return false;
+      return pathMatchesPattern(routePath, normalizedPattern);
+    })
+    .sort((a, b) =>
+      a.path === b.path
+        ? a.method.localeCompare(b.method)
+        : a.path.localeCompare(b.path),
+    );
 }
 
 export async function setRouteConfig(
@@ -395,14 +541,27 @@ export async function getRouteConfigFor(
 ): Promise<ApiRouteConfig | undefined> {
   const collection = await routeConfigsCollection();
   const normalizedApi = normalizeApiName(apiName);
-  const doc = await collection.findOne({
+  const normalizedPath = normalizePath(path);
+
+  // 1. Try exact match first (highest priority)
+  const exactDoc = await collection.findOne({
     serverName,
     apiName: normalizedApi,
     method: method.toUpperCase(),
-    path: normalizePath(path),
+    path: normalizedPath,
   });
-  if (!doc) return undefined;
-  return mapConfig(doc);
+  if (exactDoc) return mapConfig(exactDoc);
+
+  // 2. Wildcard fallback: scan all configs for this method and find pattern matches
+  const allDocs = await collection
+    .find({ serverName, apiName: normalizedApi, method: method.toUpperCase() })
+    .toArray();
+
+  const wildcardMatches = allDocs
+    .filter((doc) => doc.path.includes("*") && pathMatchesPattern(normalizedPath, doc.path))
+    .sort((a, b) => patternSpecificity(b.path) - patternSpecificity(a.path)); // most specific first
+
+  return wildcardMatches.length > 0 ? mapConfig(wildcardMatches[0]) : undefined;
 }
 
 export async function getAllRouteConfigs(
