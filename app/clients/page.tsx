@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -19,6 +19,7 @@ type ProxyClientInfo = {
   connectedAt: string;
   lastHeartbeat: string;
   status: "online" | "offline";
+  requiresEditPassword?: boolean;
 };
 
 type RequestResponse = {
@@ -36,10 +37,15 @@ type SendRequestResult = {
 };
 
 type EditableService = {
+  id: string;
   name: string;
   host: string;
   port: string;
 };
+
+function createEditableServiceId(): string {
+  return `svc-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function formatTimestamp(isoString: string): string {
   const date = new Date(isoString);
@@ -60,6 +66,7 @@ function formatRelativeTime(isoString: string): string {
 
 function servicesToEditable(services: ProxyServiceInfo[]): EditableService[] {
   return services.map((service) => ({
+    id: createEditableServiceId(),
     name: service.name,
     host: service.host,
     port: String(service.port),
@@ -67,7 +74,27 @@ function servicesToEditable(services: ProxyServiceInfo[]): EditableService[] {
 }
 
 function emptyService(): EditableService {
-  return { name: "", host: "localhost", port: "" };
+  return { id: createEditableServiceId(), name: "", host: "localhost", port: "" };
+}
+
+function servicesSignature(services: ProxyServiceInfo[]): string {
+  return JSON.stringify(
+    services.map((service) => ({
+      name: service.name.trim(),
+      host: (service.host || "localhost").trim(),
+      port: String(service.port),
+    })),
+  );
+}
+
+function editableServicesSignature(services: EditableService[]): string {
+  return JSON.stringify(
+    services.map((service) => ({
+      name: service.name.trim(),
+      host: (service.host.trim() || "localhost"),
+      port: service.port.trim(),
+    })),
+  );
 }
 
 export default function ClientsPage() {
@@ -82,6 +109,12 @@ export default function ClientsPage() {
 
   const [editClientName, setEditClientName] = useState("");
   const [editServices, setEditServices] = useState<EditableService[]>([]);
+  const [editPassword, setEditPassword] = useState("");
+  const [savePasswordOpen, setSavePasswordOpen] = useState(false);
+  const [savedEditSnapshot, setSavedEditSnapshot] = useState<{
+    clientName: string;
+    services: EditableService[];
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -96,6 +129,20 @@ export default function ClientsPage() {
 
   const selectedClient =
     clients.find((client) => client.clientId === selectedClientId) ?? null;
+  const selectedClientRequiresEditPassword = Boolean(
+    selectedClient?.requiresEditPassword,
+  );
+  const hasUnsavedChanges = useMemo(() => {
+    if (!selectedClient) return false;
+
+    const nameChanged =
+      editClientName.trim() !== selectedClient.clientName.trim();
+    const servicesChanged =
+      editableServicesSignature(editServices) !==
+      servicesSignature(selectedClient.localServices);
+
+    return nameChanged || servicesChanged;
+  }, [selectedClient, editClientName, editServices]);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -155,11 +202,39 @@ export default function ClientsPage() {
     setRightPanelView("edit");
     setSaveError(null);
     setSaveSuccess(false);
+    setEditPassword("");
+    setSavePasswordOpen(false);
+    setSavedEditSnapshot(null);
     setSelectedService(client.localServices[0]?.name || "");
     setRequestResult(null);
   }
 
-  async function saveClientConfig() {
+  function resetEditFormFromSaved() {
+    if (!selectedClient) return;
+
+    setEditClientName(selectedClient.clientName);
+    setEditServices(servicesToEditable(selectedClient.localServices));
+    setSaveError(null);
+    setSaveSuccess(false);
+  }
+
+  function revertClientEdits() {
+    const snapshot = savedEditSnapshot;
+    if (snapshot) {
+      setEditClientName(snapshot.clientName);
+      setEditServices(snapshot.services);
+    } else {
+      resetEditFormFromSaved();
+    }
+
+    setSavedEditSnapshot(null);
+    setSavePasswordOpen(false);
+    setEditPassword("");
+    setSaveError(null);
+    setSaveSuccess(false);
+  }
+
+  async function saveClientConfig(password?: string) {
     if (!selectedClient) return;
 
     setSaving(true);
@@ -178,21 +253,33 @@ export default function ClientsPage() {
       if (!editClientName.trim()) {
         throw new Error("O nome do cliente é obrigatório.");
       }
-      if (localServices.length === 0) {
-        throw new Error("Adicione ao menos um serviço.");
-      }
       if (localServices.some((service) => Number.isNaN(service.port) || service.port <= 0)) {
         throw new Error("Todas as portas precisam ser números válidos.");
+      }
+
+      const payload: {
+        clientId: string;
+        clientName: string;
+        localServices: ProxyServiceInfo[];
+        password?: string;
+      } = {
+        clientId: selectedClient.clientId,
+        clientName: editClientName.trim(),
+        localServices,
+      };
+
+      const resolvedPassword = password ?? editPassword;
+      if (selectedClientRequiresEditPassword) {
+        if (!resolvedPassword.trim()) {
+          throw new Error("Informe a senha do cliente para salvar.");
+        }
+        payload.password = resolvedPassword;
       }
 
       const res = await fetch("/api/proxy/clients", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          clientId: selectedClient.clientId,
-          clientName: editClientName.trim(),
-          localServices,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json();
@@ -211,12 +298,31 @@ export default function ClientsPage() {
         setSelectedService(data.client.localServices[0]?.name || "");
       }
 
+      setEditPassword("");
+      setSavePasswordOpen(false);
+      setSavedEditSnapshot(null);
       setSaveSuccess(true);
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Erro ao salvar cliente");
     } finally {
       setSaving(false);
     }
+  }
+
+  function handleSaveClick() {
+    if (!selectedClient) return;
+
+    if (selectedClientRequiresEditPassword) {
+      setSaveError(null);
+      setEditPassword("");
+      setSavedEditSnapshot({
+        clientName: selectedClient.clientName,
+        services: servicesToEditable(selectedClient.localServices),
+      });
+      setSavePasswordOpen(true);
+      return;
+    }
+    void saveClientConfig();
   }
 
   function updateService(
@@ -488,9 +594,14 @@ export default function ClientsPage() {
                     </div>
 
                     <div className="space-y-2">
+                      {editServices.length === 0 && (
+                        <p className="rounded-md border border-dashed border-zinc-300 px-3 py-2 text-xs text-zinc-500 dark:border-zinc-700">
+                          Nenhum serviço exposto.
+                        </p>
+                      )}
                       {editServices.map((service, index) => (
                         <div
-                          key={`${service.name}-${index}`}
+                          key={service.id}
                           className="grid gap-2 rounded-md border border-zinc-200 p-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px_auto] dark:border-zinc-800"
                         >
                           <input
@@ -517,8 +628,7 @@ export default function ClientsPage() {
                           <button
                             type="button"
                             onClick={() => removeService(index)}
-                            disabled={editServices.length === 1}
-                            className="h-8 shrink-0 rounded border border-zinc-300 px-2 text-[11px] text-zinc-600 hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-red-900/20"
+                            className="h-8 shrink-0 rounded border border-zinc-300 px-2 text-[11px] text-zinc-600 hover:bg-red-50 hover:text-red-600 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-red-900/20"
                           >
                             Remover
                           </button>
@@ -553,12 +663,22 @@ export default function ClientsPage() {
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      onClick={() => void saveClientConfig()}
-                      disabled={saving}
+                      onClick={handleSaveClick}
+                      disabled={saving || !hasUnsavedChanges}
                       className="inline-flex h-9 items-center justify-center rounded bg-zinc-900 px-4 text-sm font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
                     >
                       {saving ? "Salvando..." : "Salvar alterações"}
                     </button>
+                    {hasUnsavedChanges && (
+                      <button
+                        type="button"
+                        onClick={resetEditFormFromSaved}
+                        disabled={saving}
+                        className="inline-flex h-9 items-center justify-center rounded border border-zinc-300 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                      >
+                        Desfazer alterações
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
@@ -709,6 +829,67 @@ export default function ClientsPage() {
           </section>
         </div>
       </main>
+
+      {savePasswordOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
+          <div className="w-full max-w-sm rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              Confirmar senha do cliente
+            </h2>
+            <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+              Este cliente exige a senha definida no proxy (
+              <code className="font-mono">CLIENT_PASSWORD</code>) para alterar
+              nome ou portas expostas.
+            </p>
+            <label className="mt-4 flex flex-col gap-1">
+              <span className="text-xs text-zinc-500">Senha do cliente</span>
+              <input
+                type="password"
+                autoFocus
+                value={editPassword}
+                onChange={(e) => {
+                  setEditPassword(e.target.value);
+                  setSaveError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    void saveClientConfig(editPassword);
+                  }
+                }}
+                className="h-9 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                placeholder="Digite a senha do cliente"
+              />
+            </label>
+            {saveError && (
+              <div className="mt-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-200">
+                {saveError}
+              </div>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => {
+                  if (!saving) {
+                    revertClientEdits();
+                  }
+                }}
+                className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void saveClientConfig(editPassword)}
+                className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+              >
+                {saving ? "Salvando..." : "Confirmar e salvar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

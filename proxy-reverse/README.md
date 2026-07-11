@@ -48,6 +48,7 @@ Agente de proxy reverso para o Freeceptor. Conecta-se ao backend via **WebSocket
 |----------|-------------|-----------|
 | `CLIENT_ID` | Não | ID único do cliente (auto-gerado se vazio) |
 | `CLIENT_NAME` | Não | Nome legível do cliente (ex: "Servidor Produção") |
+| `CLIENT_PASSWORD` | Não | Senha para proteger alterações de portas/serviços no frontend |
 | `FREECEPTOR_URL` | Sim | URL do servidor Freeceptor |
 | `SERVER_NAME` | Sim | Nome do server/namespace no Freeceptor |
 | `SERVER_PASSWORD` | Não | Senha do server (se configurada) |
@@ -166,7 +167,8 @@ Connecting to Freeceptor via WebSocket...
 ## Segurança
 
 - O agent só executa requisições para serviços explicitamente configurados em `LOCAL_SERVICES`
-- Use `SERVER_PASSWORD` para proteger o acesso ao seu namespace
+- Use `SERVER_PASSWORD` para proteger o acesso ao seu namespace no Freeceptor
+- Use `CLIENT_PASSWORD` para impedir que usuários com acesso ao frontend alterem portas ou serviços expostos por este cliente
 - O agent não expõe portas localmente - toda comunicação passa pelo Freeceptor
 - Use HTTPS/WSS em produção para comunicação segura
 - Auto-reconexão com backoff exponencial previne sobrecarga do servidor

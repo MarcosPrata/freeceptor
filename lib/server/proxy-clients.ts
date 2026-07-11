@@ -2,6 +2,7 @@ import { clientManager } from "@/lib/server/websocket";
 import type { ClientInfo } from "@/lib/server/websocket";
 import type { ProxyServiceInfo } from "@/types/proxy-client";
 import { getClientConfigOverrides } from "./client-config";
+import { getClientEditPasswordRequirements } from "./client-auth";
 
 function applyOverride(
   client: ClientInfo,
@@ -14,10 +15,7 @@ function applyOverride(
   return {
     ...client,
     clientName: override.clientName || client.clientName,
-    localServices:
-      override.localServices.length > 0
-        ? override.localServices
-        : client.localServices,
+    localServices: override.localServices,
   };
 }
 
@@ -29,9 +27,15 @@ export async function getMergedClientsByServer(
     getClientConfigOverrides(serverName),
   ]);
 
-  return clients.map((client) =>
-    applyOverride(client, overrides.get(client.clientId)),
+  const passwordRequirements = await getClientEditPasswordRequirements(
+    serverName,
+    clients.map((client) => client.clientId),
   );
+
+  return clients.map((client) => ({
+    ...applyOverride(client, overrides.get(client.clientId)),
+    requiresEditPassword: passwordRequirements.get(client.clientId) ?? false,
+  }));
 }
 
 export async function getMergedClient(

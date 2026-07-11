@@ -50,6 +50,33 @@ export async function verifyOrCreateServerConfig(
   return { ok: true, serverName: normalized };
 }
 
+export async function serverRequiresPassword(serverName: string): Promise<boolean> {
+  const normalized = normalizeServerName(serverName);
+  const collection = await serverConfigsCollection();
+  const existing = await collection.findOne({ _id: normalized });
+  return Boolean(existing?.password?.trim());
+}
+
+export async function verifyServerPassword(
+  serverName: string,
+  password?: string,
+): Promise<{ ok: boolean; message?: string }> {
+  const normalized = normalizeServerName(serverName);
+  const collection = await serverConfigsCollection();
+  const existing = await collection.findOne({ _id: normalized });
+
+  if (!existing?.password?.trim()) {
+    return { ok: true };
+  }
+
+  const provided = password?.trim() ?? "";
+  if (existing.password.trim() !== provided) {
+    return { ok: false, message: "Senha inválida." };
+  }
+
+  return { ok: true };
+}
+
 export async function ensureServerConfigExists(serverName: string): Promise<string> {
   const normalized = normalizeServerName(serverName);
   const collection = await serverConfigsCollection();

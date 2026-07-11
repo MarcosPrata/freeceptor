@@ -6,6 +6,7 @@ export type ProxyClientInfo = {
   connectedAt: string;
   lastHeartbeat: string;
   status: "online" | "offline";
+  requiresEditPassword?: boolean;
 };
 
 export type ProxyServiceInfo = {
@@ -29,6 +30,7 @@ export type ProxyRegisterMessage = {
   clientName: string;
   serverName: string;
   password?: string;
+  clientPassword?: string;
   localServices: ProxyServiceInfo[];
 };
 

@@ -26,6 +26,7 @@ export type RegisterMessage = {
   clientName: string;
   serverName: string;
   password?: string;
+  clientPassword?: string;
   localServices: ProxyServiceInfo[];
 };
 

@@ -1,6 +1,7 @@
 export type ProxyConfig = {
   clientId: string;
   clientName: string;
+  clientPassword?: string;
   freeceptorUrl: string;
   serverName: string;
   serverPassword?: string;
@@ -67,6 +68,7 @@ export function loadConfig(): ProxyConfig {
   return {
     clientId,
     clientName: getEnvOrDefault("CLIENT_NAME", clientId),
+    clientPassword: process.env.CLIENT_PASSWORD?.trim() || undefined,
     freeceptorUrl: getEnvOrThrow("FREECEPTOR_URL"),
     serverName: getEnvOrThrow("SERVER_NAME"),
     serverPassword: process.env.SERVER_PASSWORD,

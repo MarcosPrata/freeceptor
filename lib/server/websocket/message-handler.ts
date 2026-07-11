@@ -1,5 +1,6 @@
 import type { WebSocket } from "ws";
 import { clientManager } from "./client-manager";
+import { setClientAuth } from "../client-auth";
 import { verifyOrCreateServerConfig } from "../server-config";
 import type {
   WebSocketMessage,
@@ -28,7 +29,7 @@ function sendError(socket: WebSocket, code: string, message: string, requestId?:
 }
 
 async function handleRegister(socket: WebSocket, message: RegisterMessage): Promise<void> {
-  const { clientId, clientName, serverName, password, localServices } = message;
+  const { clientId, clientName, serverName, password, clientPassword, localServices } = message;
 
   if (!clientId || !serverName) {
     const ack: RegisterAckMessage = {
@@ -59,6 +60,8 @@ async function handleRegister(socket: WebSocket, message: RegisterMessage): Prom
     serverName,
     localServices || []
   );
+
+  await setClientAuth(serverName, clientId, clientPassword);
 
   const ack: RegisterAckMessage = {
     type: "register_ack",

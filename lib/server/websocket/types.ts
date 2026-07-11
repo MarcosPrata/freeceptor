@@ -24,6 +24,7 @@ export type ClientInfo = {
   connectedAt: string;
   lastHeartbeat: string;
   status: "online" | "offline";
+  requiresEditPassword?: boolean;
 };
 
 export type WebSocketMessage =
@@ -42,6 +43,7 @@ export type RegisterMessage = {
   clientName: string;
   serverName: string;
   password?: string;
+  clientPassword?: string;
   localServices: ProxyServiceInfo[];
 };
 

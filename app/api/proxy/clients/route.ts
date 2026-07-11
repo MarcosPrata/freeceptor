@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMergedClient, getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { setClientConfigOverride } from "@/lib/server/client-config";
+import { verifyClientEditPassword } from "@/lib/server/client-auth";
 import { getServerSession } from "@/lib/server/server-session";
 import type { ProxyServiceInfo } from "@/types/proxy-client";
 
@@ -33,9 +34,7 @@ export async function GET(request: NextRequest) {
 
     const clients = await getMergedClientsByServer(session.serverName);
 
-    return NextResponse.json({
-      clients,
-    });
+    return NextResponse.json({ clients });
   } catch (err) {
     console.error("Error listing proxy clients:", err);
     return NextResponse.json(
@@ -57,16 +56,29 @@ export async function PATCH(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { clientId, clientName, localServices } = body as {
+    const { clientId, clientName, localServices, password } = body as {
       clientId?: string;
       clientName?: string;
       localServices?: ProxyServiceInfo[];
+      password?: string;
     };
 
     if (!clientId?.trim()) {
       return NextResponse.json(
         { error: "clientId é obrigatório" },
         { status: 400 },
+      );
+    }
+
+    const verification = await verifyClientEditPassword(
+      session.serverName,
+      clientId,
+      password,
+    );
+    if (!verification.ok) {
+      return NextResponse.json(
+        { error: verification.message ?? "Senha do cliente inválida." },
+        { status: 403 },
       );
     }
 
@@ -77,9 +89,9 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    if (!Array.isArray(localServices) || localServices.length === 0) {
+    if (!Array.isArray(localServices)) {
       return NextResponse.json(
-        { error: "localServices precisa ter ao menos um serviço" },
+        { error: "localServices precisa ser um array" },
         { status: 400 },
       );
     }

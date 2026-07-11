@@ -98,6 +98,7 @@ export class FreeceptorWebSocketClient {
       clientName: this.config.clientName,
       serverName: this.config.serverName,
       password: this.config.serverPassword,
+      clientPassword: this.config.clientPassword,
       localServices: this.config.localServices,
     };
 
