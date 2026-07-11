@@ -2,6 +2,18 @@
 
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import {
+  analyzeImportFile,
+  downloadTextFile,
+  exportTimestamp,
+  parseFileContent,
+  routeConfigsFromImport,
+  routeConfigsToOpenApi,
+  stringifyYaml,
+  type DetectedImport,
+  type ExportFormat,
+  type RouteConfigInput,
+} from "@/lib/import-export";
 
 type ApiRequestLog = {
   id: number;
@@ -259,6 +271,11 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [importFileName, setImportFileName] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [importDetected, setImportDetected] = useState<DetectedImport | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("freeceptor");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const importFileInputRef = useRef<HTMLInputElement | null>(null);
   const sseRef = useRef<EventSource | null>(null);
   const hasLoadedOnce = useRef(false);
@@ -768,9 +785,84 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
 
   async function readImportFile(file: File) {
     const raw = await file.text();
-    const parsed = JSON.parse(raw);
+    const parsed = parseFileContent(raw, file.name);
     setImportText(JSON.stringify(parsed, null, 2));
     setImportFileName(file.name);
+    setImportDetected(analyzeImportFile(parsed, selectedApi));
+  }
+
+  async function persistRouteConfigs(configs: RouteConfigInput[]) {
+    for (const cfg of configs) {
+      if (!cfg.method || !cfg.path) {
+        throw new Error("JSON inválido: cada item precisa de method e path.");
+      }
+      const res = await fetch("/api/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiName: selectedApi,
+          method: cfg.method,
+          path: cfg.path,
+          status: cfg.status,
+          headers: cfg.headers ?? {},
+          responseBody: cfg.body ?? null,
+          proxyMode: Boolean(cfg.proxyMode),
+          proxyUrl: cfg.proxyUrl ?? "",
+          proxyToClient: Boolean(cfg.proxyToClient),
+          proxyClientId: cfg.proxyClientId ?? "",
+          proxyServiceName: cfg.proxyServiceName ?? "",
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(
+          `Falha ao importar rota ${cfg.method} ${cfg.path}: ${text}`,
+        );
+      }
+    }
+  }
+
+  async function handleExport() {
+    try {
+      setExportError(null);
+      setExporting(true);
+      const res = await fetch(
+        `/api/routes/configs?apiName=${encodeURIComponent(selectedApi)}`,
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const configs = (await res.json()) as ApiRouteConfig[];
+      const timestamp = exportTimestamp();
+
+      if (exportFormat === "freeceptor") {
+        downloadTextFile(
+          JSON.stringify(configs, null, 2),
+          `freeceptor-${selectedApi}-configs-${timestamp}.json`,
+          "application/json",
+        );
+      } else {
+        const openApiDoc = routeConfigsToOpenApi(configs, selectedApi);
+        if (exportFormat === "openapi-json") {
+          downloadTextFile(
+            JSON.stringify(openApiDoc, null, 2),
+            `${selectedApi}-openapi-${timestamp}.json`,
+            "application/json",
+          );
+        } else {
+          downloadTextFile(
+            stringifyYaml(openApiDoc),
+            `${selectedApi}-openapi-${timestamp}.yaml`,
+            "application/x-yaml",
+          );
+        }
+      }
+      setExportOpen(false);
+    } catch (err) {
+      setExportError(
+        err instanceof Error ? err.message : "Erro ao exportar configs.",
+      );
+    } finally {
+      setExporting(false);
+    }
   }
 
   // Connect SSE for current api (with auto-reconnect on error)
@@ -1376,31 +1468,17 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                     type="button"
                     aria-label="Exportar configurações de rotas"
                     className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-[13px] text-zinc-700 shadow-sm transition-all duration-150 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
-                    onClick={async () => {
-                      try {
-                        const res = await fetch(
-                          `/api/routes/configs?apiName=${encodeURIComponent(selectedApi)}`,
-                        );
-                        if (!res.ok) throw new Error(await res.text());
-                        const configs = (await res.json()) as ApiRouteConfig[];
-                        const blob = new Blob([JSON.stringify(configs, null, 2)], {
-                          type: "application/json",
-                        });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-                        a.download = `freeceptor-${selectedApi}-configs-${timestamp}.json`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                      } catch (err) {
-                        console.error("Erro ao exportar configs:", err);
-                      }
+                    onClick={() => {
+                      setExportError(null);
+                      setExportFormat("freeceptor");
+                      setExportOpen(true);
                     }}
                   >
-                    ↓
+                    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 3v12" />
+                      <path d="m7 10 5 5 5-5" />
+                      <path d="M5 21h14" />
+                    </svg>
                   </button>
                   <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
                     Exportar
@@ -1415,10 +1493,15 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                       setImportError(null);
                       setImportText("");
                       setImportFileName(null);
+                      setImportDetected(null);
                       setImportOpen(true);
                     }}
                   >
-                    ↑
+                    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 21V9" />
+                      <path d="m7 14 5-5 5 5" />
+                      <path d="M5 3h14" />
+                    </svg>
                   </button>
                   <span className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 rounded bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-50 opacity-0 shadow-sm transition-opacity duration-100 group-hover:opacity-100 dark:bg-zinc-100 dark:text-zinc-900">
                     Importar
@@ -2405,6 +2488,108 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         </div>
       )}
 
+      {/* Export modal */}
+      {exportOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-4 shadow-lg dark:bg-zinc-950">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  Exportar configurações de rotas — API: {selectedApi}
+                </h2>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                  Escolha o formato de exportação.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-full p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-900"
+                onClick={() => {
+                  if (!exporting) setExportOpen(false);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mb-3 space-y-2">
+              {(
+                [
+                  {
+                    value: "freeceptor" as ExportFormat,
+                    title: "Freeceptor",
+                    description: "Formato nativo com mocks, headers e configurações de proxy.",
+                  },
+                  {
+                    value: "openapi-json" as ExportFormat,
+                    title: "OpenAPI (JSON)",
+                    description: "Especificação OpenAPI 3.0 em JSON.",
+                  },
+                  {
+                    value: "openapi-yaml" as ExportFormat,
+                    title: "OpenAPI (YAML)",
+                    description: "Especificação OpenAPI 3.0 em YAML.",
+                  },
+                ] as const
+              ).map((option) => (
+                <label
+                  key={option.value}
+                  className={cn(
+                    "flex cursor-pointer gap-3 rounded-md border px-3 py-2 transition-colors",
+                    exportFormat === option.value
+                      ? "border-zinc-900 bg-zinc-50 dark:border-zinc-200 dark:bg-zinc-900"
+                      : "border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900",
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="export-format"
+                    value={option.value}
+                    checked={exportFormat === option.value}
+                    onChange={() => setExportFormat(option.value)}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="block text-xs font-medium text-zinc-900 dark:text-zinc-50">
+                      {option.title}
+                    </span>
+                    <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">
+                      {option.description}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            {exportError && (
+              <div className="mb-2 rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-200">
+                {exportError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded border border-zinc-300 px-3 py-1 text-[11px] text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                onClick={() => {
+                  if (!exporting) setExportOpen(false);
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center rounded bg-zinc-900 px-3 py-1 text-[11px] font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                disabled={exporting}
+                onClick={() => void handleExport()}
+              >
+                {exporting ? "Exportando..." : "Exportar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Import modal */}
       {importOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
@@ -2418,8 +2603,16 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                   Arraste um arquivo{" "}
                   <code className="mx-1 rounded bg-zinc-100 px-1 py-[1px] font-mono text-[10px] dark:bg-zinc-900">
                     .json
+                  </code>
+                  ,{" "}
+                  <code className="mx-1 rounded bg-zinc-100 px-1 py-[1px] font-mono text-[10px] dark:bg-zinc-900">
+                    .yaml
                   </code>{" "}
-                  ou procure no computador.
+                  ou{" "}
+                  <code className="mx-1 rounded bg-zinc-100 px-1 py-[1px] font-mono text-[10px] dark:bg-zinc-900">
+                    .yml
+                  </code>{" "}
+                  (Freeceptor ou OpenAPI) ou procure no computador.
                 </p>
               </div>
               <button
@@ -2444,8 +2637,11 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                     if (e.dataTransfer.files?.[0]) {
                       await readImportFile(e.dataTransfer.files[0]);
                     }
-                  } catch {
-                    setImportError("Arquivo inválido. Envie um JSON válido.");
+                  } catch (err) {
+                    setImportDetected(null);
+                    setImportError(
+                      err instanceof Error ? err.message : "Arquivo inválido.",
+                    );
                   }
                 }}
               >
@@ -2467,7 +2663,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
               <input
                 ref={importFileInputRef}
                 type="file"
-                accept=".json,application/json"
+                accept=".json,.yaml,.yml,application/json,application/x-yaml,text/yaml"
                 className="hidden"
                 onChange={async (e) => {
                   try {
@@ -2475,8 +2671,11 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                     const file = e.target.files?.[0];
                     if (!file) return;
                     await readImportFile(file);
-                  } catch {
-                    setImportError("Arquivo inválido.");
+                  } catch (err) {
+                    setImportDetected(null);
+                    setImportError(
+                      err instanceof Error ? err.message : "Arquivo inválido.",
+                    );
                   } finally {
                     if (importFileInputRef.current) {
                       importFileInputRef.current.value = "";
@@ -2489,6 +2688,19 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
             {importFileName && (
               <div className="mb-2 rounded-md bg-zinc-100 px-3 py-1.5 text-xs text-zinc-700 dark:bg-zinc-900 dark:text-zinc-200">
                 Arquivo: <span className="font-mono">{importFileName}</span>
+                {importDetected && (
+                  <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-900/40 dark:text-blue-200">
+                    Detectado: {importDetected.label} — {importDetected.routeCount}{" "}
+                    {importDetected.routeCount === 1 ? "rota" : "rotas"}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {importDetected?.format === "openapi" && (
+              <div className="mb-2 rounded-md bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                Rotas OpenAPI sem example usarão body vazio. Parâmetros de path serão
+                convertidos para wildcards (*).
               </div>
             )}
 
@@ -2521,42 +2733,20 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                       setImportError(null);
                       setImporting(true);
                       if (!importText.trim()) {
-                        throw new Error("Selecione um arquivo JSON primeiro.");
+                        throw new Error("Selecione um arquivo primeiro.");
                       }
-                      const parsed = JSON.parse(importText) as
-                        | ApiRouteConfig[]
-                        | ApiRouteConfig;
-                      const configs = Array.isArray(parsed) ? parsed : [parsed];
-                      for (const cfg of configs) {
-                        if (!cfg.method || !cfg.path) {
-                          throw new Error(
-                            "JSON inválido: cada item precisa de method e path.",
-                          );
-                        }
-                        const res = await fetch("/api/routes", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            apiName: selectedApi,
-                            method: cfg.method,
-                            path: cfg.path,
-                            status: cfg.status,
-                            headers: cfg.headers ?? {},
-                            responseBody: cfg.body ?? null,
-                            proxyMode: Boolean(cfg.proxyMode),
-                            proxyUrl: cfg.proxyUrl ?? "",
-                            proxyToClient: Boolean(cfg.proxyToClient),
-                            proxyClientId: cfg.proxyClientId ?? "",
-                            proxyServiceName: cfg.proxyServiceName ?? "",
-                          }),
-                        });
-                        if (!res.ok) {
-                          const text = await res.text();
-                          throw new Error(
-                            `Falha ao importar rota ${cfg.method} ${cfg.path}: ${text}`,
-                          );
-                        }
+                      const parsed = JSON.parse(importText) as unknown;
+                      const detected =
+                        importDetected ?? analyzeImportFile(parsed, selectedApi);
+                      const configs = routeConfigsFromImport(
+                        parsed,
+                        detected.format,
+                        selectedApi,
+                      );
+                      if (configs.length === 0) {
+                        throw new Error("Nenhuma rota encontrada no arquivo.");
                       }
+                      await persistRouteConfigs(configs);
                       setImportOpen(false);
                     } catch (err) {
                       setImportError(
