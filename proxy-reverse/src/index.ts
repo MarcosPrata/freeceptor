@@ -1,4 +1,12 @@
+import { config as loadEnv } from "dotenv";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { loadConfig } from "./config.js";
+
+loadEnv({
+  path: join(dirname(fileURLToPath(import.meta.url)), "../.env"),
+  override: true,
+});
 import { FreeceptorWebSocketClient } from "./websocket-client.js";
 
 function main() {

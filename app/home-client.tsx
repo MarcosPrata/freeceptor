@@ -1201,6 +1201,14 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       (currentApiConfig.proxyToClient &&
         currentApiConfig.proxyClientId &&
         currentApiConfig.proxyServiceName));
+  const apiHasUrlProxy = Boolean(
+    currentApiConfig?.proxyMode && currentApiConfig.proxyUrl,
+  );
+  const apiHasClientProxy = Boolean(
+    currentApiConfig?.proxyToClient &&
+      currentApiConfig.proxyClientId &&
+      currentApiConfig.proxyServiceName,
+  );
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
@@ -1291,113 +1299,119 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         </header>
 
         {/* API Selector */}
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-          <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">API:</span>
+        <div className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="flex min-w-0 flex-1 items-center">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              {apiList.length === 0 && !showNewApiInput && (
+                <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                  Nenhuma API criada
+                </span>
+              )}
 
-          {apiList.length === 0 && !showNewApiInput && (
-            <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
-              Nenhuma API criada
-            </span>
-          )}
+              {/* APIs from apiList */}
+              {apiList.map((api) => (
+                <div key={api.apiName} className="group relative inline-flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedApi(api.apiName)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full py-1 pl-2.5 pr-6 text-[11px] font-medium transition-colors",
+                      selectedApi === api.apiName
+                        ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
+                        : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
+                    )}
+                  >
+                    {api.apiName}
+                    {api.proxyToClient ? (
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
+                    ) : api.proxyMode ? (
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+                    ) : null}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Deletar API ${api.apiName}`}
+                    onClick={(e) => { e.stopPropagation(); setDeleteApiName(api.apiName); }}
+                    className={cn(
+                      "absolute right-1 flex h-4 w-4 items-center justify-center rounded-full text-[9px] transition-colors",
+                      selectedApi === api.apiName
+                        ? "text-zinc-400 hover:bg-zinc-700 hover:text-zinc-50 dark:text-zinc-600 dark:hover:bg-zinc-200 dark:hover:text-zinc-900"
+                        : "text-zinc-400 hover:bg-red-100 hover:text-red-600 dark:text-zinc-600 dark:hover:bg-red-900/40 dark:hover:text-red-400",
+                    )}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
 
-          {/* APIs from apiList */}
-          {apiList.map((api) => (
-            <div key={api.apiName} className="group relative inline-flex items-center">
-              <button
-                type="button"
-                onClick={() => setSelectedApi(api.apiName)}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full py-1 pl-2.5 pr-6 text-[11px] font-medium transition-colors",
-                  selectedApi === api.apiName
-                    ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
-                    : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-                )}
-              >
-                {api.apiName}
-                {(api.proxyMode || api.proxyToClient) && (
-                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
-                )}
-              </button>
-              <button
-                type="button"
-                aria-label={`Deletar API ${api.apiName}`}
-                onClick={(e) => { e.stopPropagation(); setDeleteApiName(api.apiName); }}
-                className={cn(
-                  "absolute right-1 flex h-4 w-4 items-center justify-center rounded-full text-[9px] transition-colors",
-                  selectedApi === api.apiName
-                    ? "text-zinc-400 hover:bg-zinc-700 hover:text-zinc-50 dark:text-zinc-600 dark:hover:bg-zinc-200 dark:hover:text-zinc-900"
-                    : "text-zinc-400 hover:bg-red-100 hover:text-red-600 dark:text-zinc-600 dark:hover:bg-red-900/40 dark:hover:text-red-400",
-                )}
-              >
-                ✕
-              </button>
+              {/* Add new API */}
+              {showNewApiInput ? (
+                <form
+                  className="flex items-center gap-1"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    const name = newApiName.trim().toLowerCase();
+                    if (!name) return;
+                    await fetch("/api/apis", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ apiName: name }),
+                    });
+                    await loadApiList();
+                    setSelectedApi(name);
+                    setNewApiName("");
+                    setShowNewApiInput(false);
+                  }}
+                >
+                  <input
+                    autoFocus
+                    type="text"
+                    placeholder="nome-da-api"
+                    className="h-6 rounded border border-zinc-300 bg-white px-2 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                    value={newApiName}
+                    onChange={(e) => setNewApiName(e.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    className="rounded bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
+                  >
+                    +
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNewApiInput(false);
+                      setNewApiName("");
+                    }}
+                    className="text-[11px] text-zinc-500 hover:text-zinc-700"
+                  >
+                    ✕
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowNewApiInput(true)}
+                  className="inline-flex items-center rounded-full border border-dashed border-zinc-300 px-2.5 py-1 text-[11px] font-medium text-zinc-400 transition-colors hover:border-zinc-400 hover:text-zinc-600 dark:border-zinc-700 dark:text-zinc-500 dark:hover:text-zinc-300"
+                >
+                  + Nova API
+                </button>
+              )}
             </div>
-          ))}
-
-          {/* Add new API */}
-          {showNewApiInput ? (
-            <form
-              className="flex items-center gap-1"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const name = newApiName.trim().toLowerCase();
-                if (!name) return;
-                await fetch("/api/apis", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ apiName: name }),
-                });
-                await loadApiList();
-                setSelectedApi(name);
-                setNewApiName("");
-                setShowNewApiInput(false);
-              }}
-            >
-              <input
-                autoFocus
-                type="text"
-                placeholder="nome-da-api"
-                className="h-6 rounded border border-zinc-300 bg-white px-2 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-                value={newApiName}
-                onChange={(e) => setNewApiName(e.target.value)}
-              />
-              <button
-                type="submit"
-                className="rounded bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
-              >
-                +
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowNewApiInput(false);
-                  setNewApiName("");
-                }}
-                className="text-[11px] text-zinc-500 hover:text-zinc-700"
-              >
-                ✕
-              </button>
-            </form>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setShowNewApiInput(true)}
-              className="inline-flex items-center rounded-full border border-dashed border-zinc-300 px-2.5 py-1 text-[11px] font-medium text-zinc-400 transition-colors hover:border-zinc-400 hover:text-zinc-600 dark:border-zinc-700 dark:text-zinc-500 dark:hover:text-zinc-300"
-            >
-              + Nova API
-            </button>
-          )}
+          </div>
 
           {/* API-level proxy config button */}
-          <div className="ml-auto">
+          <div className="shrink-0 self-center border-l border-zinc-200 pl-2 dark:border-zinc-800">
             <button
               type="button"
               onClick={openApiConfig}
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
-                apiHasProxy
+                apiHasClientProxy
                   ? "bg-blue-600 text-white dark:bg-blue-500 dark:text-zinc-950"
-                  : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
+                  : apiHasUrlProxy
+                    ? "bg-violet-600 text-white dark:bg-violet-500 dark:text-zinc-950"
+                    : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
               )}
             >
               {apiHasProxy ? "Proxy da API ativo" : "Configurar proxy da API"}
@@ -1413,7 +1427,14 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
 
         {/* API-level proxy info banner */}
         {apiHasProxy && (
-          <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+          <div
+            className={cn(
+              "rounded-md border px-3 py-2 text-[11px]",
+              apiHasClientProxy
+                ? "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200"
+                : "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200",
+            )}
+          >
             <span className="font-semibold">Proxy da API &quot;{selectedApi}&quot; ativo</span>
             {currentApiConfig?.proxyMode && currentApiConfig.proxyUrl && (
               <span> → URL: <code className="font-mono">{currentApiConfig.proxyUrl}</code></span>
@@ -1427,7 +1448,14 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                 )}
               </span>
             )}
-            <span className="ml-2 text-blue-700 dark:text-blue-400">
+            <span
+              className={cn(
+                "ml-2",
+                apiHasClientProxy
+                  ? "text-blue-700 dark:text-blue-400"
+                  : "text-violet-700 dark:text-violet-400",
+              )}
+            >
               (rotas com proxy próprio têm prioridade)
             </span>
           </div>
@@ -1614,12 +1642,12 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                       <span className="inline-flex items-center gap-2 font-mono text-[11px]">
                         <span>{log.path || "-"}</span>
                         {log.proxyTargetUrl && (
-                          <span className="ml-2 inline-flex items-center rounded-full bg-blue-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-blue-500 dark:text-zinc-950">
+                          <span className="ml-2 inline-flex items-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-violet-500 dark:text-zinc-950">
                             proxy url
                           </span>
                         )}
                         {log.proxyClientId && (
-                          <span className="ml-2 inline-flex items-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-violet-500 dark:text-zinc-950">
+                          <span className="ml-2 inline-flex items-center rounded-full bg-blue-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-blue-500 dark:text-zinc-950">
                             proxy client
                           </span>
                         )}
@@ -1700,7 +1728,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                 </span>
                               </div>
                               {log.proxyTargetUrl && (
-                                <div className="mb-2 rounded border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+                                <div className="mb-2 rounded border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200">
                                   <div>
                                     <span className="font-semibold">Proxy URL habilitado</span>
                                     <span>, respondido por:</span>
@@ -1711,16 +1739,16 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                 </div>
                               )}
                               {log.proxyClientId && (
-                                <div className="mb-2 rounded border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200">
+                                <div className="mb-2 rounded border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
                                   <div>
                                     <span className="font-semibold">Proxy Client habilitado</span>
                                     <span>, respondido pelo cliente:</span>
                                   </div>
                                   <div className="mt-2 flex items-center gap-2">
-                                    <span className="rounded bg-violet-200 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-violet-800 dark:bg-violet-800 dark:text-violet-200">
+                                    <span className="rounded bg-blue-200 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-blue-800 dark:bg-blue-800 dark:text-blue-200">
                                       {log.proxyClientName || log.proxyClientId}
                                     </span>
-                                    <span className="text-violet-600 dark:text-violet-400">→</span>
+                                    <span className="text-blue-600 dark:text-blue-400">→</span>
                                     <span className="font-mono text-[11px]">
                                       {log.proxyServiceName}
                                     </span>
@@ -2192,7 +2220,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                 const labels: Record<string, string> = {
                                   disabled: "Resposta mock",
                                   url: "Proxy para URL",
-                                  client: "Proxy para cliente (ngrok-style)",
+                                  client: "Proxy para cliente conectado",
                                 };
                                 const isChecked = configProxyModeType === mode;
                                 return (
@@ -2223,9 +2251,9 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                           )}
 
                           {configProxyModeType === "url" && (
-                            <div className="mb-2 rounded border border-blue-200 bg-blue-50 p-2 dark:border-blue-900 dark:bg-blue-950/30">
+                            <div className="mb-2 rounded border border-violet-200 bg-violet-50 p-2 dark:border-violet-900 dark:bg-violet-950/30">
                               <label className="flex flex-col gap-1">
-                                <span className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                                <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300">
                                   URL de destino
                                 </span>
                                 <input
@@ -2240,13 +2268,13 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                           )}
 
                           {configProxyModeType === "client" && (
-                            <div className="mb-2 rounded border border-violet-200 bg-violet-50 p-2 dark:border-violet-900 dark:bg-violet-950/30">
+                            <div className="mb-2 rounded border border-blue-200 bg-blue-50 p-2 dark:border-blue-900 dark:bg-blue-950/30">
                               <div className="mb-1 flex items-center gap-1">
-                                <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300">
+                                <span className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
                                   Cliente conectado
                                 </span>
-                                <span className="rounded bg-violet-200 px-1 py-0.5 text-[9px] font-medium text-violet-800 dark:bg-violet-800 dark:text-violet-200">
-                                  ngrok-style
+                                <span className="rounded bg-blue-200 px-1 py-0.5 text-[9px] font-medium text-blue-800 dark:bg-blue-800 dark:text-blue-200">
+                                  via cliente
                                 </span>
                               </div>
                               {connectedClients.filter((c) => c.status === "online").length ===
@@ -2257,7 +2285,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                               ) : (
                                 <div className="grid gap-2 sm:grid-cols-2">
                                   <label className="flex flex-col gap-1">
-                                    <span className="text-[10px] text-violet-600 dark:text-violet-400">
+                                    <span className="text-[10px] text-blue-600 dark:text-blue-400">
                                       Cliente
                                     </span>
                                     <select
@@ -2283,7 +2311,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                     </select>
                                   </label>
                                   <label className="flex flex-col gap-1">
-                                    <span className="text-[10px] text-violet-600 dark:text-violet-400">
+                                    <span className="text-[10px] text-blue-600 dark:text-blue-400">
                                       Serviço
                                     </span>
                                     <select
@@ -2864,15 +2892,15 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                       checked={apiProxyModeType === "client"}
                       onChange={() => setApiProxyModeType("client")}
                     />
-                    <span>Proxy para cliente (ngrok-style)</span>
+                    <span>Proxy para cliente conectado</span>
                   </label>
                 </div>
               </div>
 
               {apiProxyModeType === "url" && (
-                <div className="rounded border border-blue-200 bg-blue-50 p-2 dark:border-blue-900 dark:bg-blue-950/30">
+                <div className="rounded border border-violet-200 bg-violet-50 p-2 dark:border-violet-900 dark:bg-violet-950/30">
                   <label className="flex flex-col gap-1">
-                    <span className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                    <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300">
                       URL de destino
                     </span>
                     <input
@@ -2887,9 +2915,9 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
               )}
 
               {apiProxyModeType === "client" && (
-                <div className="rounded border border-violet-200 bg-violet-50 p-2 dark:border-violet-900 dark:bg-violet-950/30">
+                <div className="rounded border border-blue-200 bg-blue-50 p-2 dark:border-blue-900 dark:bg-blue-950/30">
                   <div className="mb-1 flex items-center gap-1">
-                    <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300">
+                    <span className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
                       Cliente conectado
                     </span>
                   </div>
@@ -2900,7 +2928,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                   ) : (
                     <div className="grid gap-2 sm:grid-cols-2">
                       <label className="flex flex-col gap-1">
-                        <span className="text-[10px] text-violet-600 dark:text-violet-400">
+                        <span className="text-[10px] text-blue-600 dark:text-blue-400">
                           Cliente
                         </span>
                         <select
@@ -2922,7 +2950,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                         </select>
                       </label>
                       <label className="flex flex-col gap-1">
-                        <span className="text-[10px] text-violet-600 dark:text-violet-400">
+                        <span className="text-[10px] text-blue-600 dark:text-blue-400">
                           Serviço
                         </span>
                         <select

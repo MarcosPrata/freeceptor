@@ -4,6 +4,7 @@ import {
   subscribeToChanges,
 } from "@/lib/server/request-log";
 import { getServerFromCookie } from "@/lib/server/server-session";
+import { getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { clientManager } from "@/lib/server/websocket";
 
 export const dynamic = "force-dynamic";
@@ -48,7 +49,7 @@ export async function GET(request: Request) {
       send({
         type: "snapshot",
         ...snapshot,
-        clients: clientManager.getClientsByServer(serverName),
+        clients: await getMergedClientsByServer(serverName),
       });
 
       const unsubscribe = subscribeToChanges(serverName, apiName, (payload) => {
@@ -57,9 +58,8 @@ export async function GET(request: Request) {
 
       const unsubscribeClients = clientManager.onClientUpdate((updatedServer) => {
         if (updatedServer !== serverName) return;
-        send({
-          type: "clients",
-          clients: clientManager.getClientsByServer(serverName),
+        void getMergedClientsByServer(serverName).then((clients) => {
+          send({ type: "clients", clients });
         });
       });
 

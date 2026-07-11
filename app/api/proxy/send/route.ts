@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getMergedClient, getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { clientManager } from "@/lib/server/websocket";
 import type { RequestMessage } from "@/lib/server/websocket";
 import { getServerSession } from "@/lib/server/server-session";
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const clients = clientManager.getClientsByServer(session.serverName);
+    const clients = await getMergedClientsByServer(session.serverName);
     const client = clients.find((c) => c.clientId === targetClientId);
     
     if (!client) {

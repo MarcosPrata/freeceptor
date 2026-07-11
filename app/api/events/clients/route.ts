@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "@/lib/server/server-session";
+import { getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { clientManager } from "@/lib/server/websocket";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +16,7 @@ export async function GET(request: Request) {
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
+    async start(controller) {
       let closed = false;
 
       function send(data: unknown) {
@@ -36,14 +37,17 @@ export async function GET(request: Request) {
         controller.close();
       }
 
-      // snapshot inicial
-      controller.enqueue(encoder.encode("retry: 3000\n\n"));
-      send({ clients: clientManager.getClientsByServer(serverName) });
+      async function sendClients() {
+        const clients = await getMergedClientsByServer(serverName);
+        send({ clients });
+      }
 
-      // assina mudanças de clientes
+      controller.enqueue(encoder.encode("retry: 3000\n\n"));
+      await sendClients();
+
       const unsubscribe = clientManager.onClientUpdate((updatedServer) => {
         if (updatedServer !== serverName) return;
-        send({ clients: clientManager.getClientsByServer(serverName) });
+        void sendClients();
       });
 
       const heartbeatId = setInterval(sendHeartbeat, 15000);

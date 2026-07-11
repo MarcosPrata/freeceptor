@@ -35,6 +35,12 @@ type SendRequestResult = {
   error?: string;
 };
 
+type EditableService = {
+  name: string;
+  host: string;
+  port: string;
+};
+
 function formatTimestamp(isoString: string): string {
   const date = new Date(isoString);
   return date.toLocaleString();
@@ -45,11 +51,23 @@ function formatRelativeTime(isoString: string): string {
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffSec = Math.floor(diffMs / 1000);
-  
+
   if (diffSec < 60) return `${diffSec}s atrás`;
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m atrás`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h atrás`;
   return `${Math.floor(diffSec / 86400)}d atrás`;
+}
+
+function servicesToEditable(services: ProxyServiceInfo[]): EditableService[] {
+  return services.map((service) => ({
+    name: service.name,
+    host: service.host,
+    port: String(service.port),
+  }));
+}
+
+function emptyService(): EditableService {
+  return { name: "", host: "localhost", port: "" };
 }
 
 export default function ClientsPage() {
@@ -59,7 +77,15 @@ export default function ClientsPage() {
   const [clients, setClients] = useState<ProxyClientInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedClient, setSelectedClient] = useState<ProxyClientInfo | null>(null);
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [rightPanelView, setRightPanelView] = useState<"edit" | "request">("edit");
+
+  const [editClientName, setEditClientName] = useState("");
+  const [editServices, setEditServices] = useState<EditableService[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
   const [selectedService, setSelectedService] = useState<string>("");
   const [requestMethod, setRequestMethod] = useState<string>("GET");
   const [requestPath, setRequestPath] = useState<string>("/");
@@ -67,6 +93,9 @@ export default function ClientsPage() {
   const [requestHeaders, setRequestHeaders] = useState<string>("{}");
   const [sending, setSending] = useState(false);
   const [requestResult, setRequestResult] = useState<SendRequestResult | null>(null);
+
+  const selectedClient =
+    clients.find((client) => client.clientId === selectedClientId) ?? null;
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -119,11 +148,96 @@ export default function ClientsPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (selectedClient && selectedClient.localServices.length > 0 && !selectedService) {
-      setSelectedService(selectedClient.localServices[0].name);
+  function selectClient(client: ProxyClientInfo) {
+    setSelectedClientId(client.clientId);
+    setEditClientName(client.clientName);
+    setEditServices(servicesToEditable(client.localServices));
+    setRightPanelView("edit");
+    setSaveError(null);
+    setSaveSuccess(false);
+    setSelectedService(client.localServices[0]?.name || "");
+    setRequestResult(null);
+  }
+
+  async function saveClientConfig() {
+    if (!selectedClient) return;
+
+    setSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
+
+    try {
+      const localServices = editServices
+        .filter((service) => service.name.trim() && service.port.trim())
+        .map((service) => ({
+          name: service.name.trim(),
+          host: service.host.trim() || "localhost",
+          port: Number(service.port),
+        }));
+
+      if (!editClientName.trim()) {
+        throw new Error("O nome do cliente é obrigatório.");
+      }
+      if (localServices.length === 0) {
+        throw new Error("Adicione ao menos um serviço.");
+      }
+      if (localServices.some((service) => Number.isNaN(service.port) || service.port <= 0)) {
+        throw new Error("Todas as portas precisam ser números válidos.");
+      }
+
+      const res = await fetch("/api/proxy/clients", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientId: selectedClient.clientId,
+          clientName: editClientName.trim(),
+          localServices,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Erro ao salvar cliente");
+      }
+
+      if (data.client) {
+        setClients((prev) =>
+          prev.map((client) =>
+            client.clientId === data.client.clientId ? data.client : client,
+          ),
+        );
+        setEditClientName(data.client.clientName);
+        setEditServices(servicesToEditable(data.client.localServices));
+        setSelectedService(data.client.localServices[0]?.name || "");
+      }
+
+      setSaveSuccess(true);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Erro ao salvar cliente");
+    } finally {
+      setSaving(false);
     }
-  }, [selectedClient, selectedService]);
+  }
+
+  function updateService(
+    index: number,
+    field: keyof EditableService,
+    value: string,
+  ) {
+    setEditServices((prev) =>
+      prev.map((service, i) =>
+        i === index ? { ...service, [field]: value } : service,
+      ),
+    );
+  }
+
+  function removeService(index: number) {
+    setEditServices((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function addService() {
+    setEditServices((prev) => [...prev, emptyService()]);
+  }
 
   async function sendRequest() {
     if (!selectedClient || !selectedService) return;
@@ -236,7 +350,7 @@ export default function ClientsPage() {
           </Link>
         </header>
 
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid gap-6 lg:grid-cols-[minmax(260px,2fr)_minmax(0,3fr)]">
           <section className="rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
             <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
               <h2 className="text-sm font-medium">
@@ -256,16 +370,12 @@ export default function ClientsPage() {
                   {clients.map((client) => (
                     <div
                       key={client.clientId}
-                      onClick={() => {
-                        setSelectedClient(client);
-                        setSelectedService(client.localServices[0]?.name || "");
-                        setRequestResult(null);
-                      }}
+                      onClick={() => selectClient(client)}
                       className={cn(
                         "cursor-pointer rounded-md border p-3 transition-colors",
-                        selectedClient?.clientId === client.clientId
+                        selectedClientId === client.clientId
                           ? "border-zinc-900 bg-zinc-100 dark:border-zinc-100 dark:bg-zinc-900"
-                          : "border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:border-zinc-700 dark:hover:bg-zinc-900/50"
+                          : "border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:border-zinc-700 dark:hover:bg-zinc-900/50",
                       )}
                     >
                       <div className="flex items-center justify-between gap-2">
@@ -275,10 +385,10 @@ export default function ClientsPage() {
                               "h-2 w-2 rounded-full",
                               client.status === "online"
                                 ? "bg-emerald-500"
-                                : "bg-zinc-400"
+                                : "bg-zinc-400",
                             )}
                           />
-                          <span className="font-medium text-sm">
+                          <span className="text-sm font-medium">
                             {client.clientName}
                           </span>
                         </div>
@@ -287,7 +397,7 @@ export default function ClientsPage() {
                             "rounded-full px-2 py-0.5 text-[10px] font-medium uppercase",
                             client.status === "online"
                               ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                              : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                              : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
                           )}
                         >
                           {client.status}
@@ -318,15 +428,152 @@ export default function ClientsPage() {
           </section>
 
           <section className="rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+            <div className="flex items-center justify-between gap-2 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
               <h2 className="text-sm font-medium">
-                Enviar Requisição
+                {rightPanelView === "edit" ? "Configuração do Cliente" : "Enviar Requisição"}
               </h2>
+              {selectedClient && rightPanelView === "request" && (
+                <button
+                  type="button"
+                  onClick={() => setRightPanelView("edit")}
+                  className="text-[11px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                >
+                  ← Voltar à configuração
+                </button>
+              )}
             </div>
+
             <div className="p-4">
               {!selectedClient ? (
                 <div className="rounded border border-dashed border-zinc-300 px-4 py-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
-                  Selecione um cliente para enviar requisições.
+                  Selecione um cliente para editar suas configurações.
+                </div>
+              ) : rightPanelView === "edit" ? (
+                <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="flex flex-col gap-1 sm:col-span-2">
+                      <span className="text-xs text-zinc-500">Client ID</span>
+                      <input
+                        type="text"
+                        value={selectedClient.clientId}
+                        readOnly
+                        className="h-8 rounded border border-zinc-200 bg-zinc-50 px-2 font-mono text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
+                      />
+                    </label>
+
+                    <label className="flex flex-col gap-1 sm:col-span-2">
+                      <span className="text-xs text-zinc-500">Nome do cliente</span>
+                      <input
+                        type="text"
+                        value={editClientName}
+                        onChange={(e) => setEditClientName(e.target.value)}
+                        className="h-8 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        placeholder="Ex: MacBook Pro"
+                      />
+                    </label>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-medium text-zinc-500">
+                        Serviços disponíveis
+                      </span>
+                      <button
+                        type="button"
+                        onClick={addService}
+                        className="rounded border border-dashed border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                      >
+                        + Adicionar serviço
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {editServices.map((service, index) => (
+                        <div
+                          key={`${service.name}-${index}`}
+                          className="grid gap-2 rounded-md border border-zinc-200 p-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px_auto] dark:border-zinc-800"
+                        >
+                          <input
+                            type="text"
+                            value={service.name}
+                            onChange={(e) => updateService(index, "name", e.target.value)}
+                            placeholder="nome"
+                            className="h-8 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                          />
+                          <input
+                            type="text"
+                            value={service.host}
+                            onChange={(e) => updateService(index, "host", e.target.value)}
+                            placeholder="host"
+                            className="h-8 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                          />
+                          <input
+                            type="number"
+                            value={service.port}
+                            onChange={(e) => updateService(index, "port", e.target.value)}
+                            placeholder="porta"
+                            className="h-8 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeService(index)}
+                            disabled={editServices.length === 1}
+                            className="h-8 shrink-0 rounded border border-zinc-300 px-2 text-[11px] text-zinc-600 hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-red-900/20"
+                          >
+                            Remover
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+                    <span
+                      className={cn(
+                        "h-2 w-2 rounded-full",
+                        selectedClient.status === "online"
+                          ? "bg-emerald-500"
+                          : "bg-zinc-400",
+                      )}
+                    />
+                    Status: {selectedClient.status}
+                  </div>
+
+                  {saveError && (
+                    <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-200">
+                      {saveError}
+                    </div>
+                  )}
+                  {saveSuccess && (
+                    <div className="rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200">
+                      Configurações salvas com sucesso.
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void saveClientConfig()}
+                      disabled={saving}
+                      className="inline-flex h-9 items-center justify-center rounded bg-zinc-900 px-4 text-sm font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    >
+                      {saving ? "Salvando..." : "Salvar alterações"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRightPanelView("request");
+                        setRequestResult(null);
+                        if (!selectedService && editServices[0]?.name) {
+                          setSelectedService(editServices[0].name);
+                        }
+                      }}
+                      disabled={selectedClient.status !== "online"}
+                      className="inline-flex h-9 items-center justify-center rounded border border-zinc-300 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                    >
+                      Enviar requisição
+                    </button>
+                  </div>
                 </div>
               ) : selectedClient.status !== "online" ? (
                 <div className="rounded border border-dashed border-amber-300 bg-amber-50 px-4 py-8 text-center text-sm text-amber-700 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
@@ -336,7 +583,7 @@ export default function ClientsPage() {
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-zinc-500">Cliente:</span>
-                    <span className="font-medium text-sm">{selectedClient.clientName}</span>
+                    <span className="text-sm font-medium">{editClientName || selectedClient.clientName}</span>
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -347,11 +594,13 @@ export default function ClientsPage() {
                         onChange={(e) => setSelectedService(e.target.value)}
                         className="h-8 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
                       >
-                        {selectedClient.localServices.map((service) => (
-                          <option key={service.name} value={service.name}>
-                            {service.name} ({service.host}:{service.port})
-                          </option>
-                        ))}
+                        {editServices
+                          .filter((service) => service.name.trim())
+                          .map((service) => (
+                            <option key={service.name} value={service.name}>
+                              {service.name} ({service.host || "localhost"}:{service.port})
+                            </option>
+                          ))}
                       </select>
                     </label>
 
@@ -421,11 +670,12 @@ export default function ClientsPage() {
                           <span
                             className={cn(
                               "rounded-full px-2 py-0.5 font-mono text-xs font-semibold",
-                              requestResult.response.status >= 200 && requestResult.response.status < 300
+                              requestResult.response.status >= 200 &&
+                                requestResult.response.status < 300
                                 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
                                 : requestResult.response.status >= 400
                                   ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                                  : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                                  : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
                             )}
                           >
                             {requestResult.response.status}

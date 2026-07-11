@@ -5,11 +5,12 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "sh -c 'set -a; [ -f .env ] && source .env; set +a; node --import tsx/esm --watch src/index.ts'",
+    "dev": "node --import tsx/esm --watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {

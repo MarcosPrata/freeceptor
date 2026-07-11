@@ -6,6 +6,7 @@ import {
   migrateExistingRecords,
 } from "@/lib/server/request-log";
 import { ensureServerConfigExists } from "@/lib/server/server-config";
+import { getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { clientManager } from "@/lib/server/websocket";
 import type { RequestMessage } from "@/lib/server/websocket";
 
@@ -282,7 +283,7 @@ async function proxyToClientRequest({
   body: unknown;
   clientName?: string;
 }> {
-  const clients = clientManager.getClientsByServer(serverName);
+  const clients = await getMergedClientsByServer(serverName);
   const client = clients.find((c) => c.clientId === clientId);
 
   if (!client) {
