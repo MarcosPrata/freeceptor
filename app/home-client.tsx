@@ -223,6 +223,8 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [newApiName, setNewApiName] = useState("");
   const [showNewApiInput, setShowNewApiInput] = useState(false);
   const [deleteApiName, setDeleteApiName] = useState<string | null>(null);
+  const [deleteRouteTarget, setDeleteRouteTarget] = useState<ApiRouteStat | null>(null);
+  const [clearRequestsOpen, setClearRequestsOpen] = useState(false);
   const [apiConfigOpen, setApiConfigOpen] = useState(false);
   const [apiProxyModeType, setApiProxyModeType] = useState<ProxyModeType>("disabled");
   const [apiProxyUrl, setApiProxyUrl] = useState("");
@@ -476,6 +478,47 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       }
     } catch {
       // non-fatal
+    }
+  }
+
+  async function confirmDeleteRoute() {
+    if (!deleteRouteTarget) return;
+    const route = deleteRouteTarget;
+    setDeleteRouteTarget(null);
+    setRoutes((prev) => prev.filter((r) => r.id !== route.id));
+    if (configRouteId === route.id) setConfigRouteId(null);
+    try {
+      await fetch("/api/routes", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiName: selectedApi,
+          method: route.method,
+          path: route.path,
+        }),
+      });
+    } catch (err) {
+      console.error("Erro ao deletar rota:", err);
+      setRoutes((prev) =>
+        [...prev, route].sort((a, b) =>
+          a.path === b.path
+            ? a.method.localeCompare(b.method)
+            : a.path.localeCompare(b.path),
+        ),
+      );
+    }
+  }
+
+  async function confirmClearRequests() {
+    try {
+      await fetch(`/api/logs?apiName=${encodeURIComponent(selectedApi)}`, {
+        method: "DELETE",
+      });
+      setLogs([]);
+      setExpandedIds([]);
+      setClearRequestsOpen(false);
+    } catch (err) {
+      console.error("Erro ao limpar requisições:", err);
     }
   }
 
@@ -1212,7 +1255,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
-      <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-4 px-4 py-8">
+      <main className="mx-auto flex h-screen max-w-5xl min-h-0 flex-col gap-4 overflow-hidden px-4 py-8">
         {/* Header */}
         <header className="flex items-start justify-between gap-4">
           <div>
@@ -1543,17 +1586,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                   type="button"
                   aria-label="Limpar requisições"
                   className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-[13px] text-zinc-700 shadow-sm transition-colors hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-red-900/40 dark:hover:text-red-200"
-                  onClick={async () => {
-                    try {
-                      await fetch(`/api/logs?apiName=${encodeURIComponent(selectedApi)}`, {
-                        method: "DELETE",
-                      });
-                      setLogs([]);
-                      setExpandedIds([]);
-                    } catch (err) {
-                      console.error("Erro ao limpar requisições:", err);
-                    }
-                  }}
+                  onClick={() => setClearRequestsOpen(true)}
                 >
                   <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M6 6l1 14h10l1-14" /><path d="M10 10v7" /><path d="M14 10v7" />
@@ -1571,9 +1604,9 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         </div>
 
         {/* Main content */}
-        <section className="flex-1 overflow-auto rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
           {!selectedApi ? (
-            <div className="flex flex-col items-center justify-center gap-4 px-4 py-16 text-center">
+            <div className="flex flex-1 flex-col items-center justify-center gap-4 px-4 py-16 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-full border border-dashed border-zinc-300 text-2xl text-zinc-400 dark:border-zinc-700">
                 +
               </div>
@@ -1595,7 +1628,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
             </div>
           ) : (
           <>
-          <div className="border-b border-zinc-200 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+          <div className="shrink-0 border-b border-zinc-200 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
             {activeTab === "requests"
               ? loading
                 ? "Carregando requisições..."
@@ -1605,7 +1638,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                 : `${routes.length} combinações método + path`}
           </div>
 
-          <div className="max-h-[70vh] overflow-auto text-xs">
+          <div className="min-h-0 flex-1 overflow-auto text-xs">
             {activeTab === "requests" ? (
               <div className="space-y-3 p-3">
                 {logs.map((log) => (
@@ -2078,28 +2111,9 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                           type="button"
                           aria-label="Remover configuração desta rota"
                           className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-300 text-[11px] text-zinc-600 hover:bg-red-50 hover:text-red-700 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-red-900/40 dark:hover:text-red-200"
-                          onClick={async (e) => {
+                          onClick={(e) => {
                             e.stopPropagation();
-                            // Optimistic update — remove from UI immediately
-                            setRoutes((prev) => prev.filter((r) => r.id !== route.id));
-                            if (configRouteId === route.id) setConfigRouteId(null);
-                            try {
-                              await fetch("/api/routes", {
-                                method: "DELETE",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                  apiName: selectedApi,
-                                  method: route.method,
-                                  path: route.path,
-                                }),
-                              });
-                            } catch (err) {
-                              console.error("Erro ao deletar rota:", err);
-                              // Restore the route if the request failed
-                              setRoutes((prev) => [...prev, route].sort((a, b) =>
-                                a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path)
-                              ));
-                            }
+                            setDeleteRouteTarget(route);
                           }}
                         >
                           <svg
@@ -2422,7 +2436,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
 
       {/* Wildcard merge confirmation modal */}
       {wildcardModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
           <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
             <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
               Converter para coringa?
@@ -2487,7 +2501,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
 
       {/* Delete API confirmation modal */}
       {deleteApiName && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
           <div className="w-full max-w-sm rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
             <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
               Deletar API &quot;{deleteApiName}&quot;?
@@ -2516,9 +2530,72 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         </div>
       )}
 
+      {/* Delete route confirmation modal */}
+      {deleteRouteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
+          <div className="w-full max-w-sm rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              Deletar rota {deleteRouteTarget.method}{" "}
+              <code className="font-mono text-[12px]">{deleteRouteTarget.path}</code>?
+            </h2>
+            <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+              A configuração desta rota será removida permanentemente. Esta ação não pode ser
+              desfeita.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteRouteTarget(null)}
+                className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmDeleteRoute()}
+                className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600"
+              >
+                Deletar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear requests confirmation modal */}
+      {clearRequestsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
+          <div className="w-full max-w-sm rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              Limpar requisições da API &quot;{selectedApi}&quot;?
+            </h2>
+            <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+              Todas as {logs.length} requisições registradas serão removidas permanentemente.
+              Esta ação não pode ser desfeita.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setClearRequestsOpen(false)}
+                className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmClearRequests()}
+                className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600"
+              >
+                Limpar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Export modal */}
       {exportOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
           <div className="w-full max-w-md rounded-lg bg-white p-4 shadow-lg dark:bg-zinc-950">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div>
@@ -2620,7 +2697,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
 
       {/* Import modal */}
       {importOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
           <div className="w-full max-w-xl rounded-lg bg-white p-4 shadow-lg dark:bg-zinc-950">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div>
@@ -2795,7 +2872,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
 
       {/* API proxy config modal */}
       {apiConfigOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
           <div className="w-full max-w-lg rounded-lg bg-white p-4 shadow-lg dark:bg-zinc-950">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div>
