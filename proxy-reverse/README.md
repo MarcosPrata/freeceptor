@@ -55,6 +55,7 @@ Agente de proxy reverso para o Freeceptor. Conecta-se ao backend via **WebSocket
 | `LOCAL_SERVICES` | Não | Serviços locais para expor (ver formato abaixo) |
 | `VERBOSE` | Não | Habilita logs detalhados (padrão: `false`) |
 | `RECONNECT_INTERVAL` | Não | Intervalo base de reconexão em ms (padrão: `5000`) |
+| `UI_PORT` | Não | Porta do dashboard local de configuração (padrão: `8080`) |
 
 ### Formato de LOCAL_SERVICES
 

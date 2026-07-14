@@ -8,6 +8,15 @@ import type {
 } from "./types.js";
 import { executeLocalRequest } from "./local-executor.js";
 
+export type AgentStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "registered"
+  | "reconnecting"
+  | "disconnected"
+  | "failed";
+
 export class FreeceptorWebSocketClient {
   private ws: WebSocket | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
@@ -16,8 +25,42 @@ export class FreeceptorWebSocketClient {
   private shouldReconnect = true;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
+  private status: AgentStatus = "idle";
+
+  public onStatusChange?: (status: AgentStatus, config: ProxyConfig) => void;
 
   constructor(private config: ProxyConfig) {}
+
+  getStatus(): AgentStatus {
+    return this.status;
+  }
+
+  getConfig(): ProxyConfig {
+    return this.config;
+  }
+
+  updateConfig(newConfig: ProxyConfig): void {
+    this.shouldReconnect = false;
+    this.stopHeartbeat();
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    if (this.ws) {
+      this.ws.close(1000, "Config updated");
+      this.ws = null;
+    }
+    this.config = newConfig;
+    this.reconnectAttempts = 0;
+    this.isConnecting = false;
+    this.shouldReconnect = true;
+    setTimeout(() => this.connect(), 300);
+  }
+
+  private setStatus(status: AgentStatus): void {
+    this.status = status;
+    this.onStatusChange?.(status, this.config);
+  }
 
   connect(): void {
     if (this.isConnecting || this.ws?.readyState === WebSocket.OPEN) {
@@ -25,6 +68,7 @@ export class FreeceptorWebSocketClient {
     }
 
     this.isConnecting = true;
+    this.setStatus("connecting");
     const wsUrl = this.buildWebSocketUrl();
 
     if (this.config.verbose) {
@@ -44,6 +88,7 @@ export class FreeceptorWebSocketClient {
       this.isConnecting = false;
       this.reconnectAttempts = 0;
       console.log("[WebSocket] Connected to Freeceptor");
+      this.setStatus("connected");
       this.register();
       this.startHeartbeat();
     });
@@ -58,6 +103,11 @@ export class FreeceptorWebSocketClient {
         `[WebSocket] Disconnected (code: ${code}, reason: ${reason.toString() || "none"})`
       );
       this.stopHeartbeat();
+      if (this.shouldReconnect) {
+        this.setStatus("reconnecting");
+      } else {
+        this.setStatus("disconnected");
+      }
       this.scheduleReconnect();
     });
 
@@ -80,6 +130,8 @@ export class FreeceptorWebSocketClient {
       this.ws.close(1000, "Client disconnecting");
       this.ws = null;
     }
+
+    this.setStatus("disconnected");
   }
 
   private buildWebSocketUrl(): string {
@@ -134,6 +186,7 @@ export class FreeceptorWebSocketClient {
 
     if (this.reconnectAttempts > this.maxReconnectAttempts) {
       console.error(`[WebSocket] Max reconnect attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
+      this.setStatus("failed");
       return;
     }
 
@@ -181,6 +234,7 @@ export class FreeceptorWebSocketClient {
       case "register_ack":
         if (message.success) {
           console.log("[WebSocket] Registration successful");
+          this.setStatus("registered");
         } else {
           console.error(`[WebSocket] Registration failed: ${message.message}`);
           this.shouldReconnect = false;

@@ -1,13 +1,15 @@
 import { config as loadEnv } from "dotenv";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { loadConfig } from "./config.js";
+import { loadAgentConfig } from "./config.js";
+import { FreeceptorHTTPServer } from "./http-server.js";
 
-loadEnv({
-  path: join(dirname(fileURLToPath(import.meta.url)), "../.env"),
-  override: true,
-});
-import { FreeceptorWebSocketClient } from "./websocket-client.js";
+const dir = dirname(fileURLToPath(import.meta.url));
+const envPath = join(dir, "../.env");
+const configPath = join(dir, "../agent-config.json");
+
+// Load .env for backward-compat migration (used by loadAgentConfig fallback)
+loadEnv({ path: envPath, override: true });
 
 function main() {
   console.log("╔═══════════════════════════════════════════════════════╗");
@@ -16,49 +18,40 @@ function main() {
   console.log("╚═══════════════════════════════════════════════════════╝");
   console.log();
 
-  const config = loadConfig();
+  const uiPort = parseInt(process.env.UI_PORT ?? "8081", 10);
+  const agentConfig = loadAgentConfig(configPath);
 
   console.log("Configuration:");
-  console.log(`  Client ID:      ${config.clientId}`);
-  console.log(`  Client Name:    ${config.clientName}`);
-  console.log(`  Freeceptor URL: ${config.freeceptorUrl}`);
-  console.log(`  Server Name:    ${config.serverName}`);
-  console.log(`  Verbose:        ${config.verbose}`);
+  console.log(`  Client ID:      ${agentConfig.clientId}`);
+  console.log(`  Client Name:    ${agentConfig.clientName}`);
+  console.log(`  Freeceptor URL: ${agentConfig.freeceptorUrl || "(not set)"}`);
+  console.log(`  Connections:    ${agentConfig.connections.length}`);
   console.log();
 
-  if (config.localServices.length > 0) {
-    console.log("Exposed Local Services:");
-    for (const service of config.localServices) {
-      console.log(`  - ${service.name}: ${service.host}:${service.port}`);
-    }
-    console.log();
-  } else {
-    console.log("No local services configured.");
-    console.log("Set LOCAL_SERVICES to expose services (e.g., 'api:3000,db:5432')");
-    console.log();
+  for (const conn of agentConfig.connections) {
+    const svcs = conn.localServices.map((s) => `${s.name}:${s.port}`).join(", ");
+    console.log(`  → ${conn.serverName}${svcs ? `  [${svcs}]` : ""}`);
   }
+  if (agentConfig.connections.length > 0) console.log();
 
-  const client = new FreeceptorWebSocketClient(config);
+  const httpServer = new FreeceptorHTTPServer(uiPort, configPath, agentConfig);
+  httpServer.start();
 
-  console.log("Connecting to Freeceptor via WebSocket...");
   console.log("Press Ctrl+C to stop.");
   console.log();
 
-  client.connect();
-
-  process.on("SIGINT", () => {
+  const shutdown = () => {
     console.log("\nShutting down...");
-    client.disconnect();
+    httpServer.disconnectAll();
+    httpServer.stop();
     setTimeout(() => {
       console.log("Goodbye!");
       process.exit(0);
     }, 1000);
-  });
+  };
 
-  process.on("SIGTERM", () => {
-    client.disconnect();
-    setTimeout(() => process.exit(0), 1000);
-  });
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 main();
