@@ -15,6 +15,8 @@ import {
   type RouteConfigInput,
 } from "@/lib/import-export";
 
+const LOGS_PAGE_SIZE = 20;
+
 type ApiRequestLog = {
   id: string;
   timestamp: string;
@@ -234,6 +236,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [apiConfigSaving, setApiConfigSaving] = useState(false);
 
   const [logs, setLogs] = useState<ApiRequestLog[]>([]);
+  const [logsPage, setLogsPage] = useState(1);
   const [routes, setRoutes] = useState<ApiRouteStat[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1131,6 +1134,17 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authenticated, selectedApi]);
 
+  useEffect(() => {
+    setLogsPage(1);
+  }, [selectedApi]);
+
+  useEffect(() => {
+    setLogsPage((p) => {
+      const total = Math.max(1, Math.ceil(logs.length / LOGS_PAGE_SIZE));
+      return Math.min(Math.max(1, p), total);
+    });
+  }, [logs.length]);
+
   if (!sessionReady) {
     return (
       <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
@@ -1190,10 +1204,21 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
               }
             }}
           >
-            <h1 className="text-xl font-semibold tracking-tight">Freeceptor</h1>
-            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-              Entre com o server config para acessar requests e rotas.
-            </p>
+            <div className="flex items-center gap-3">
+              <img
+                src="/logo.png"
+                alt="Freeceptor"
+                width={56}
+                height={56}
+                className="size-14 shrink-0 rounded-md"
+              />
+              <div className="min-w-0">
+                <h1 className="text-xl font-semibold tracking-tight">Freeceptor</h1>
+                <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                  Entre com o server config para acessar requests e rotas.
+                </p>
+              </div>
+            </div>
             <div className="mt-4 space-y-3">
               <label className="flex flex-col gap-1">
                 <span className="text-xs text-zinc-500">Server name</span>
@@ -1253,38 +1278,58 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       currentApiConfig.proxyServiceName,
   );
 
+  const logsTotalPages = Math.max(1, Math.ceil(logs.length / LOGS_PAGE_SIZE));
+  const safeLogsPage = Math.min(Math.max(1, logsPage), logsTotalPages);
+  const logsPageStart = logs.length === 0 ? 0 : (safeLogsPage - 1) * LOGS_PAGE_SIZE + 1;
+  const logsPageEnd = Math.min(safeLogsPage * LOGS_PAGE_SIZE, logs.length);
+  const paginatedLogs = logs.slice(
+    (safeLogsPage - 1) * LOGS_PAGE_SIZE,
+    safeLogsPage * LOGS_PAGE_SIZE,
+  );
+
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
       <main className="mx-auto flex h-screen max-w-5xl min-h-0 flex-col gap-4 overflow-hidden px-4 py-8">
         {/* Header */}
         <header className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Freeceptor</h1>
-            <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-              Server: <code className="font-mono">{currentServerName}</code>
-            </p>
-            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              Toda chamada a{" "}
-              <button
-                type="button"
-                title={urlCopied ? "Copiado!" : "Clique para copiar"}
-                onClick={copyUrl}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded px-1 font-mono text-[13px] transition-colors",
-                  urlCopied
-                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                    : "bg-zinc-100 text-zinc-800 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700",
-                )}
-              >
-                {baseUrl}/api/{currentServerName}/{selectedApi}/*
-                {urlCopied ? (
-                  <svg viewBox="0 0 24 24" className="h-3 w-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
-                ) : (
-                  <svg viewBox="0 0 24 24" className="h-3 w-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-                )}
-              </button>{" "}
-              aparece aqui em tempo real.
-            </p>
+          <div className="flex min-w-0 items-center gap-3">
+            <img
+              src="/logo.png"
+              alt="Freeceptor"
+              width={72}
+              height={72}
+              className="size-[72px] shrink-0 rounded-md"
+            />
+            <div className="min-w-0">
+              <h1 className="text-2xl font-semibold leading-tight tracking-tight">
+                Freeceptor
+              </h1>
+              <p className="mt-0.5 text-xs leading-snug text-zinc-500 dark:text-zinc-400">
+                Server: <code className="font-mono">{currentServerName}</code>
+              </p>
+              <p className="mt-1 text-sm leading-snug text-zinc-600 dark:text-zinc-400">
+                Toda chamada a{" "}
+                <button
+                  type="button"
+                  title={urlCopied ? "Copiado!" : "Clique para copiar"}
+                  onClick={copyUrl}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded px-1 font-mono text-[13px] transition-colors",
+                    urlCopied
+                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                      : "bg-zinc-100 text-zinc-800 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700",
+                  )}
+                >
+                  {baseUrl}/api/{currentServerName}/{selectedApi}/*
+                  {urlCopied ? (
+                    <svg viewBox="0 0 24 24" className="h-3 w-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" className="h-3 w-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                  )}
+                </button>{" "}
+                aparece aqui em tempo real.
+              </p>
+            </div>
           </div>
           <div className="mt-1 flex shrink-0 items-center gap-2">
             <a
@@ -1641,7 +1686,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           <div className="min-h-0 flex-1 overflow-auto text-xs">
             {activeTab === "requests" ? (
               <div className="space-y-3 p-3">
-                {logs.map((log) => (
+                {paginatedLogs.map((log) => (
                   <div
                     key={log.id}
                     className="rounded-md border border-zinc-200 bg-white shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900/60"
@@ -2429,6 +2474,35 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
               </div>
             )}
           </div>
+
+          {activeTab === "requests" && !loading && logs.length > 0 && (
+            <div className="flex shrink-0 items-center justify-between gap-3 border-t border-zinc-200 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+              <span>
+                Mostrando {logsPageStart}–{logsPageEnd} de {logs.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={safeLogsPage <= 1}
+                  onClick={() => setLogsPage(safeLogsPage - 1)}
+                  className="rounded border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                >
+                  Anterior
+                </button>
+                <span className="tabular-nums">
+                  Página {safeLogsPage} de {logsTotalPages}
+                </span>
+                <button
+                  type="button"
+                  disabled={safeLogsPage >= logsTotalPages}
+                  onClick={() => setLogsPage(safeLogsPage + 1)}
+                  className="rounded border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                >
+                  Próxima
+                </button>
+              </div>
+            </div>
+          )}
           </>
           )}
         </section>

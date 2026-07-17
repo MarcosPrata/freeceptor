@@ -558,18 +558,27 @@ export default function ClientsPage() {
     <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
       <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-4 px-4 py-8">
         <header className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Clientes Conectados
-            </h1>
-            {serverNameFromPath && (
-              <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-                Server: <code className="font-mono">{serverNameFromPath}</code>
+          <div className="flex min-w-0 items-center gap-3">
+            <img
+              src="/logo.png"
+              alt="Freeceptor"
+              width={72}
+              height={72}
+              className="size-[72px] shrink-0 rounded-md"
+            />
+            <div className="min-w-0">
+              <h1 className="text-2xl font-semibold leading-tight tracking-tight">
+                Clientes Conectados
+              </h1>
+              {serverNameFromPath && (
+                <p className="mt-0.5 text-xs leading-snug text-zinc-500 dark:text-zinc-400">
+                  Server: <code className="font-mono">{serverNameFromPath}</code>
+                </p>
+              )}
+              <p className="mt-1 text-sm leading-snug text-zinc-600 dark:text-zinc-400">
+                Gerencie e envie requisições para clientes proxy conectados.
               </p>
-            )}
-            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              Gerencie e envie requisições para clientes proxy conectados.
-            </p>
+            </div>
           </div>
           <Link
             href={backHref}
