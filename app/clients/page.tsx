@@ -1,9 +1,21 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+
+const FREECEPTOR_CLIENT_IMAGE = "mhpjunior/freeceptor-client:latest";
+
+function getServerNameFromPath(pathname: string): string {
+  const match = pathname.match(/\/server\/([^/]+)(?:\/|$)/);
+  if (!match?.[1]) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
 
 type ProxyServiceInfo = {
   name: string;
@@ -100,12 +112,19 @@ function editableServicesSignature(services: EditableService[]): string {
 export default function ClientsPage() {
   const pathname = usePathname();
   const backHref = pathname.replace(/\/clients$/, "") || "/";
+  const serverNameFromPath = useMemo(
+    () => getServerNameFromPath(pathname),
+    [pathname],
+  );
 
   const [clients, setClients] = useState<ProxyClientInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [rightPanelView, setRightPanelView] = useState<"edit" | "request">("edit");
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [dockerRunCopied, setDockerRunCopied] = useState(false);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
 
   const [editClientName, setEditClientName] = useState("");
   const [editServices, setEditServices] = useState<EditableService[]>([]);
@@ -143,6 +162,69 @@ export default function ClientsPage() {
 
     return nameChanged || servicesChanged;
   }, [selectedClient, editClientName, editServices]);
+
+  useEffect(() => {
+    if (!actionsOpen) return;
+
+    function handlePointerDown(event: MouseEvent) {
+      if (
+        actionsMenuRef.current &&
+        !actionsMenuRef.current.contains(event.target as Node)
+      ) {
+        setActionsOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setActionsOpen(false);
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [actionsOpen]);
+
+  function buildDockerRunCommand(): string {
+    const origin =
+      typeof window !== "undefined" ? window.location.origin : "";
+    // Dentro do container, localhost aponta para o próprio container — não para o host.
+    const freeceptorUrl = origin.replace(
+      /^(https?:\/\/)(localhost|127\.0\.0\.1)(:|\/|$)/i,
+      "$1host.docker.internal$3",
+    );
+    const needsDockerHost =
+      freeceptorUrl !== origin && freeceptorUrl.includes("host.docker.internal");
+    const serverName =
+      serverNameFromPath ||
+      selectedClient?.serverName ||
+      clients[0]?.serverName ||
+      "";
+
+    const parts = [
+      "docker run --name freeceptor-client",
+      "-p 8081:8080",
+      // Compatível com Docker Desktop (Mac/Windows) e Docker Linux.
+      needsDockerHost ? "--add-host=host.docker.internal:host-gateway" : "",
+      freeceptorUrl ? `-e FREECEPTOR_URL=${freeceptorUrl}` : "",
+      serverName ? `-e SERVER_NAME=${serverName}` : "",
+      FREECEPTOR_CLIENT_IMAGE,
+    ].filter(Boolean);
+
+    return parts.join(" ");
+  }
+
+  function copyDockerRun() {
+    void navigator.clipboard.writeText(buildDockerRunCommand()).then(() => {
+      setDockerRunCopied(true);
+      setActionsOpen(false);
+      setTimeout(() => setDockerRunCopied(false), 2000);
+    }).catch(() => {
+      /* ignore */
+    });
+  }
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -438,38 +520,158 @@ export default function ClientsPage() {
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
-      <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-4 py-8">
-        <header className="flex items-center justify-between gap-4">
+      <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-4 px-4 py-8">
+        <header className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">
               Clientes Conectados
             </h1>
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            {serverNameFromPath && (
+              <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                Server: <code className="font-mono">{serverNameFromPath}</code>
+              </p>
+            )}
+            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
               Gerencie e envie requisições para clientes proxy conectados.
             </p>
           </div>
           <Link
             href={backHref}
-            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            className="mt-1 flex shrink-0 items-center gap-1.5 rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
           >
             ← Voltar
           </Link>
         </header>
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(260px,2fr)_minmax(0,3fr)]">
+        <div className="grid gap-4 lg:grid-cols-[minmax(260px,2fr)_minmax(0,3fr)]">
           <section className="rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-              <h2 className="text-sm font-medium">
+            <div className="flex items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+              <h2 className="text-xs text-zinc-500 dark:text-zinc-400">
                 Clientes ({clients.length})
               </h2>
+              <div className="relative" ref={actionsMenuRef}>
+                <button
+                  type="button"
+                  aria-label="Ações do cliente"
+                  aria-expanded={actionsOpen}
+                  aria-haspopup="menu"
+                  title={dockerRunCopied ? "Comando copiado!" : "Ações"}
+                  onClick={() => setActionsOpen((open) => !open)}
+                  className={cn(
+                    "inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-zinc-500 shadow-sm transition-colors",
+                    "hover:bg-zinc-100 hover:text-zinc-800",
+                    "dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
+                    actionsOpen && "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100",
+                    dockerRunCopied &&
+                      "border-emerald-300 text-emerald-600 dark:border-emerald-700 dark:text-emerald-300",
+                  )}
+                >
+                  {dockerRunCopied ? (
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M20 6L9 17l-5-5" />
+                    </svg>
+                  ) : (
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="h-4 w-4"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <circle cx="5" cy="12" r="1.6" />
+                      <circle cx="12" cy="12" r="1.6" />
+                      <circle cx="19" cy="12" r="1.6" />
+                    </svg>
+                  )}
+                </button>
+                {actionsOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 z-20 mt-1 min-w-[220px] rounded-lg border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-950"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={copyDockerRun}
+                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                    >
+                      <span>Copiar docker run</span>
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-3.5 w-3.5 shrink-0 text-zinc-400"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <rect x="9" y="9" width="13" height="13" rx="2" />
+                        <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
             <div className="max-h-[60vh] overflow-auto p-3">
               {clients.length === 0 ? (
-                <div className="rounded border border-dashed border-zinc-300 px-4 py-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
-                  <p className="mb-2">Nenhum cliente conectado.</p>
-                  <p className="text-xs text-zinc-400">
-                    Configure e inicie o proxy-reverse em uma máquina para vê-la aqui.
+                <div className="flex flex-col items-center justify-center gap-3 rounded border border-dashed border-zinc-300 px-4 py-10 text-center dark:border-zinc-700">
+                  <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                    Nenhum cliente conectado.
                   </p>
+                  <button
+                    type="button"
+                    title={dockerRunCopied ? "Copiado!" : "Clique para copiar"}
+                    onClick={copyDockerRun}
+                    className={cn(
+                      "inline-flex max-w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs transition-colors",
+                      dockerRunCopied
+                        ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                        : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700",
+                    )}
+                  >
+                    {dockerRunCopied ? (
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-3 w-3 shrink-0"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M20 6L9 17l-5-5" />
+                      </svg>
+                    ) : (
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-3 w-3 shrink-0"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <rect x="9" y="9" width="13" height="13" rx="2" />
+                        <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                      </svg>
+                    )}
+                    <span>
+                      {dockerRunCopied
+                        ? "Comando copiado!"
+                        : "Copie o docker run e rode o client na sua máquina"}
+                    </span>
+                  </button>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -534,24 +736,40 @@ export default function ClientsPage() {
           </section>
 
           <section className="rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="flex items-center justify-between gap-2 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-              <h2 className="text-sm font-medium">
+            <div className="flex items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+              <h2 className="text-xs text-zinc-500 dark:text-zinc-400">
                 {rightPanelView === "edit" ? "Configuração do Cliente" : "Enviar Requisição"}
               </h2>
               {selectedClient && rightPanelView === "request" && (
                 <button
                   type="button"
                   onClick={() => setRightPanelView("edit")}
-                  className="text-[11px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                  className="text-[11px] text-zinc-500 transition-colors hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
                 >
                   ← Voltar à configuração
                 </button>
               )}
             </div>
 
-            <div className="p-4">
+            <div className="p-3">
               {!selectedClient ? (
-                <div className="rounded border border-dashed border-zinc-300 px-4 py-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
+                <div className="flex items-center justify-center gap-3 rounded border border-dashed border-zinc-300 px-3 py-10 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-500">
+                  <svg
+                    className="shrink-0 text-zinc-400 dark:text-zinc-600"
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                  </svg>
                   Selecione um cliente para editar suas configurações.
                 </div>
               ) : rightPanelView === "edit" ? (
@@ -563,7 +781,7 @@ export default function ClientsPage() {
                         type="text"
                         value={selectedClient.clientId}
                         readOnly
-                        className="h-8 rounded border border-zinc-200 bg-zinc-50 px-2 font-mono text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
+                        className="h-9 rounded border border-zinc-200 bg-zinc-50 px-2 font-mono text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
                       />
                     </label>
 
@@ -573,7 +791,7 @@ export default function ClientsPage() {
                         type="text"
                         value={editClientName}
                         onChange={(e) => setEditClientName(e.target.value)}
-                        className="h-8 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        className="h-9 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
                         placeholder="Ex: MacBook Pro"
                       />
                     </label>
@@ -587,7 +805,7 @@ export default function ClientsPage() {
                       <button
                         type="button"
                         onClick={addService}
-                        className="rounded border border-dashed border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                        className="inline-flex items-center rounded-full border border-dashed border-zinc-300 px-2.5 py-1 text-[11px] font-medium text-zinc-400 transition-colors hover:border-zinc-400 hover:text-zinc-600 dark:border-zinc-700 dark:text-zinc-500 dark:hover:text-zinc-300"
                       >
                         + Adicionar serviço
                       </button>
@@ -609,26 +827,26 @@ export default function ClientsPage() {
                             value={service.name}
                             onChange={(e) => updateService(index, "name", e.target.value)}
                             placeholder="nome"
-                            className="h-8 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                            className="h-9 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
                           />
                           <input
                             type="text"
                             value={service.host}
                             onChange={(e) => updateService(index, "host", e.target.value)}
                             placeholder="host"
-                            className="h-8 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                            className="h-9 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
                           />
                           <input
                             type="number"
                             value={service.port}
                             onChange={(e) => updateService(index, "port", e.target.value)}
                             placeholder="porta"
-                            className="h-8 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                            className="h-9 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
                           />
                           <button
                             type="button"
                             onClick={() => removeService(index)}
-                            className="h-8 shrink-0 rounded border border-zinc-300 px-2 text-[11px] text-zinc-600 hover:bg-red-50 hover:text-red-600 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-red-900/20"
+                            className="h-9 shrink-0 rounded border border-zinc-300 bg-white px-2 text-[11px] text-zinc-600 transition-colors hover:bg-red-50 hover:text-red-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-red-900/40 dark:hover:text-red-200"
                           >
                             Remover
                           </button>
@@ -674,7 +892,7 @@ export default function ClientsPage() {
                         type="button"
                         onClick={resetEditFormFromSaved}
                         disabled={saving}
-                        className="inline-flex h-9 items-center justify-center rounded border border-zinc-300 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                        className="inline-flex h-9 items-center justify-center rounded border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
                       >
                         Desfazer alterações
                       </button>
@@ -689,14 +907,14 @@ export default function ClientsPage() {
                         }
                       }}
                       disabled={selectedClient.status !== "online"}
-                      className="inline-flex h-9 items-center justify-center rounded border border-zinc-300 px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                      className="inline-flex h-9 items-center justify-center rounded border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
                     >
                       Enviar requisição
                     </button>
                   </div>
                 </div>
               ) : selectedClient.status !== "online" ? (
-                <div className="rounded border border-dashed border-amber-300 bg-amber-50 px-4 py-8 text-center text-sm text-amber-700 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                <div className="rounded border border-amber-200 bg-amber-50 px-3 py-6 text-center text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
                   Este cliente está offline. Aguarde ele reconectar.
                 </div>
               ) : (
@@ -712,7 +930,7 @@ export default function ClientsPage() {
                       <select
                         value={selectedService}
                         onChange={(e) => setSelectedService(e.target.value)}
-                        className="h-8 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        className="h-9 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
                       >
                         {editServices
                           .filter((service) => service.name.trim())
@@ -729,7 +947,7 @@ export default function ClientsPage() {
                       <select
                         value={requestMethod}
                         onChange={(e) => setRequestMethod(e.target.value)}
-                        className="h-8 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        className="h-9 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
                       >
                         <option value="GET">GET</option>
                         <option value="POST">POST</option>
@@ -746,7 +964,7 @@ export default function ClientsPage() {
                       type="text"
                       value={requestPath}
                       onChange={(e) => setRequestPath(e.target.value)}
-                      className="h-8 rounded border border-zinc-300 bg-white px-2 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                      className="h-9 rounded border border-zinc-300 bg-white px-2 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-900"
                       placeholder="/api/endpoint"
                     />
                   </label>
@@ -874,7 +1092,7 @@ export default function ClientsPage() {
                     revertClientEdits();
                   }
                 }}
-                className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                className="rounded border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
               >
                 Cancelar
               </button>
