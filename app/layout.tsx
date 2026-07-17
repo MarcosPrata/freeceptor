@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { version } from "../package.json";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -28,6 +29,12 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        <div
+          aria-label={`Versão ${version}`}
+          className="pointer-events-none fixed bottom-3 left-3 z-50 font-mono text-[10px] text-zinc-400 dark:text-zinc-600"
+        >
+          v{version}
+        </div>
       </body>
     </html>
   );

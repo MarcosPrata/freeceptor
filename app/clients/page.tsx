@@ -51,7 +51,6 @@ type SendRequestResult = {
 type EditableService = {
   id: string;
   name: string;
-  host: string;
   port: string;
 };
 
@@ -80,20 +79,18 @@ function servicesToEditable(services: ProxyServiceInfo[]): EditableService[] {
   return services.map((service) => ({
     id: createEditableServiceId(),
     name: service.name,
-    host: service.host,
     port: String(service.port),
   }));
 }
 
 function emptyService(): EditableService {
-  return { id: createEditableServiceId(), name: "", host: "localhost", port: "" };
+  return { id: createEditableServiceId(), name: "", port: "" };
 }
 
 function servicesSignature(services: ProxyServiceInfo[]): string {
   return JSON.stringify(
     services.map((service) => ({
       name: service.name.trim(),
-      host: (service.host || "localhost").trim(),
       port: String(service.port),
     })),
   );
@@ -103,7 +100,6 @@ function editableServicesSignature(services: EditableService[]): string {
   return JSON.stringify(
     services.map((service) => ({
       name: service.name.trim(),
-      host: (service.host.trim() || "localhost"),
       port: service.port.trim(),
     })),
   );
@@ -326,11 +322,18 @@ export default function ClientsPage() {
     try {
       const localServices = editServices
         .filter((service) => service.name.trim() && service.port.trim())
-        .map((service) => ({
-          name: service.name.trim(),
-          host: service.host.trim() || "localhost",
-          port: Number(service.port),
-        }));
+        .map((service) => {
+          const name = service.name.trim();
+          const existingHost = selectedClient.localServices.find(
+            (s) => s.name.trim() === name,
+          )?.host;
+          return {
+            name,
+            // Host é definido pelo client (Docker vs local); o front só edita nome/porta.
+            host: existingHost?.trim() || "localhost",
+            port: Number(service.port),
+          };
+        });
 
       if (!editClientName.trim()) {
         throw new Error("O nome do cliente é obrigatório.");
@@ -820,20 +823,13 @@ export default function ClientsPage() {
                       {editServices.map((service, index) => (
                         <div
                           key={service.id}
-                          className="grid gap-2 rounded-md border border-zinc-200 p-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px_auto] dark:border-zinc-800"
+                          className="grid gap-2 rounded-md border border-zinc-200 p-2 sm:grid-cols-[minmax(0,1fr)_90px_auto] dark:border-zinc-800"
                         >
                           <input
                             type="text"
                             value={service.name}
                             onChange={(e) => updateService(index, "name", e.target.value)}
                             placeholder="nome"
-                            className="h-9 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
-                          />
-                          <input
-                            type="text"
-                            value={service.host}
-                            onChange={(e) => updateService(index, "host", e.target.value)}
-                            placeholder="host"
                             className="h-9 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
                           />
                           <input
@@ -936,7 +932,7 @@ export default function ClientsPage() {
                           .filter((service) => service.name.trim())
                           .map((service) => (
                             <option key={service.name} value={service.name}>
-                              {service.name} ({service.host || "localhost"}:{service.port})
+                              {service.name}:{service.port}
                             </option>
                           ))}
                       </select>
