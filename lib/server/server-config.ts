@@ -147,12 +147,13 @@ export async function deleteServerAndAllData(serverName: string): Promise<void> 
   if (!normalized) return;
 
   const db = await getDb();
+  const servers = await serverConfigsCollection();
   await Promise.all([
     db.collection("api_configs").deleteMany({ serverName: normalized }),
     db.collection("route_configs").deleteMany({ serverName: normalized }),
     db.collection("request_logs").deleteMany({ serverName: normalized }),
     db.collection("client_auth").deleteMany({ serverName: normalized }),
     db.collection("client_configs").deleteMany({ serverName: normalized }),
-    db.collection("server_configs").deleteOne({ _id: normalized }),
+    servers.deleteOne({ _id: normalized }),
   ]);
 }
