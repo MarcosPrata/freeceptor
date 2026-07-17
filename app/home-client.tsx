@@ -210,7 +210,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [currentServerName, setCurrentServerName] = useState(initialSession?.serverName ?? "");
   const [loginServerName, setLoginServerName] = useState(initialSession?.serverName ?? "");
   const [baseUrl, setBaseUrl] = useState(
-    process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3002",
+    process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:8001",
   );
   const [loginPassword, setLoginPassword] = useState("");
   const [loginSubmitting, setLoginSubmitting] = useState(false);
@@ -1202,7 +1202,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                   className="h-9 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
                   value={loginServerName}
                   onChange={(e) => setLoginServerName(e.target.value)}
-                  placeholder="ex: antifraude"
+                  placeholder="Digite o nome do server"
                   required
                 />
               </label>
@@ -1213,7 +1213,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                   className="h-9 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
-                  placeholder="Digite a senha do server"
+                  placeholder="Digite a senha do server (opcional)"
                 />
               </label>
             </div>

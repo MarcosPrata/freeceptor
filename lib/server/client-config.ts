@@ -79,3 +79,12 @@ export async function setClientConfigOverride(
 
   return override;
 }
+
+/** Remove override para o registro ao vivo do client voltar a ser a fonte da verdade. */
+export async function clearClientConfigOverride(
+  serverName: string,
+  clientId: string,
+): Promise<void> {
+  const col = await collection();
+  await col.deleteOne({ _id: buildId(serverName, clientId) });
+}

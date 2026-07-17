@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMergedClient, getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { setClientConfigOverride } from "@/lib/server/client-config";
-import { verifyClientEditPassword } from "@/lib/server/client-auth";
+import { clientRequiresEditPassword } from "@/lib/server/client-auth";
 import { getServerSession } from "@/lib/server/server-session";
 import type { ProxyServiceInfo } from "@/types/proxy-client";
 
@@ -56,11 +56,10 @@ export async function PATCH(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { clientId, clientName, localServices, password } = body as {
+    const { clientId, clientName, localServices } = body as {
       clientId?: string;
       clientName?: string;
       localServices?: ProxyServiceInfo[];
-      password?: string;
     };
 
     if (!clientId?.trim()) {
@@ -70,14 +69,13 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    const verification = await verifyClientEditPassword(
-      session.serverName,
-      clientId,
-      password,
-    );
-    if (!verification.ok) {
+    // Cliente com senha só pode ser configurado no próprio Freeceptor Client.
+    if (await clientRequiresEditPassword(session.serverName, clientId)) {
       return NextResponse.json(
-        { error: verification.message ?? "Senha do cliente inválida." },
+        {
+          error:
+            "Este cliente tem senha. Altere a configuração no Freeceptor Client.",
+        },
         { status: 403 },
       );
     }

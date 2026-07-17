@@ -159,6 +159,46 @@ export default function ClientsPage() {
     return nameChanged || servicesChanged;
   }, [selectedClient, editClientName, editServices]);
 
+  // Último snapshot do server aplicado no formulário (para sincronizar SSE sem apagar edição local).
+  const appliedLiveSigRef = useRef<string>("");
+
+  useEffect(() => {
+    if (!selectedClient) {
+      appliedLiveSigRef.current = "";
+      return;
+    }
+
+    const liveSig = `${selectedClient.clientId}|${selectedClient.clientName}|${servicesSignature(selectedClient.localServices)}`;
+    if (liveSig === appliedLiveSigRef.current) return;
+
+    const clientChanged =
+      !appliedLiveSigRef.current ||
+      !appliedLiveSigRef.current.startsWith(`${selectedClient.clientId}|`);
+
+    const formSig = `${selectedClient.clientId}|${editClientName.trim()}|${editableServicesSignature(editServices)}`;
+    const formMatchesApplied = formSig === appliedLiveSigRef.current;
+
+    // Com senha / troca de cliente / sem edição local: espelha o client ao vivo.
+    if (
+      selectedClientRequiresEditPassword ||
+      clientChanged ||
+      formMatchesApplied
+    ) {
+      setEditClientName(selectedClient.clientName);
+      setEditServices(servicesToEditable(selectedClient.localServices));
+      setSelectedService((prev) => {
+        const names = selectedClient.localServices.map((service) => service.name);
+        return prev && names.includes(prev) ? prev : names[0] || "";
+      });
+      appliedLiveSigRef.current = liveSig;
+    }
+  }, [
+    selectedClient,
+    selectedClientRequiresEditPassword,
+    editClientName,
+    editServices,
+  ]);
+
   useEffect(() => {
     if (!actionsOpen) return;
 
@@ -184,27 +224,19 @@ export default function ClientsPage() {
   }, [actionsOpen]);
 
   function buildDockerRunCommand(): string {
-    const origin =
-      typeof window !== "undefined" ? window.location.origin : "";
-    // Dentro do container, localhost aponta para o próprio container — não para o host.
-    const freeceptorUrl = origin.replace(
-      /^(https?:\/\/)(localhost|127\.0\.0\.1)(:|\/|$)/i,
-      "$1host.docker.internal$3",
-    );
-    const needsDockerHost =
-      freeceptorUrl !== origin && freeceptorUrl.includes("host.docker.internal");
     const serverName =
       serverNameFromPath ||
       selectedClient?.serverName ||
       clients[0]?.serverName ||
       "";
 
+    // Mesma porta no host e no container (UI_PORT).
+    // FREECEPTOR_URL / host do gateway: o client infere sozinho no Docker.
+    const uiPort = 8002;
     const parts = [
       "docker run --name freeceptor-client",
-      "-p 8081:8080",
-      // Compatível com Docker Desktop (Mac/Windows) e Docker Linux.
-      needsDockerHost ? "--add-host=host.docker.internal:host-gateway" : "",
-      freeceptorUrl ? `-e FREECEPTOR_URL=${freeceptorUrl}` : "",
+      `-p ${uiPort}:${uiPort}`,
+      `-e UI_PORT=${uiPort}`,
       serverName ? `-e SERVER_NAME=${serverName}` : "",
       FREECEPTOR_CLIENT_IMAGE,
     ].filter(Boolean);
@@ -277,6 +309,7 @@ export default function ClientsPage() {
     setSelectedClientId(client.clientId);
     setEditClientName(client.clientName);
     setEditServices(servicesToEditable(client.localServices));
+    appliedLiveSigRef.current = `${client.clientId}|${client.clientName}|${servicesSignature(client.localServices)}`;
     setRightPanelView("edit");
     setSaveError(null);
     setSaveSuccess(false);
@@ -740,8 +773,29 @@ export default function ClientsPage() {
 
           <section className="rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
             <div className="flex items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-              <h2 className="text-xs text-zinc-500 dark:text-zinc-400">
+              <h2 className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
                 {rightPanelView === "edit" ? "Configuração do Cliente" : "Enviar Requisição"}
+                {selectedClientRequiresEditPassword && rightPanelView === "edit" && (
+                  <span
+                    title="Configuração protegida — edite apenas no client"
+                    aria-label="Cliente protegido por senha"
+                    className="inline-flex text-zinc-400 dark:text-zinc-500"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <rect x="5" y="11" width="14" height="10" rx="2" />
+                      <path d="M8 11V8a4 4 0 018 0v3" />
+                    </svg>
+                  </span>
+                )}
               </h2>
               {selectedClient && rightPanelView === "request" && (
                 <button
@@ -777,6 +831,12 @@ export default function ClientsPage() {
                 </div>
               ) : rightPanelView === "edit" ? (
                 <div className="space-y-4">
+                  {selectedClientRequiresEditPassword && (
+                    <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+                      Este cliente tem senha — a configuração só pode ser alterada no Freeceptor Client.
+                    </div>
+                  )}
+
                   <div className="grid gap-3 sm:grid-cols-2">
                     <label className="flex flex-col gap-1 sm:col-span-2">
                       <span className="text-xs text-zinc-500">Client ID</span>
@@ -794,7 +854,14 @@ export default function ClientsPage() {
                         type="text"
                         value={editClientName}
                         onChange={(e) => setEditClientName(e.target.value)}
-                        className="h-9 rounded border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                        readOnly={selectedClientRequiresEditPassword}
+                        disabled={selectedClientRequiresEditPassword}
+                        className={cn(
+                          "h-9 rounded border px-2 text-sm",
+                          selectedClientRequiresEditPassword
+                            ? "border-zinc-200 bg-zinc-50 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
+                            : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-900",
+                        )}
                         placeholder="Ex: MacBook Pro"
                       />
                     </label>
@@ -805,13 +872,15 @@ export default function ClientsPage() {
                       <span className="text-xs font-medium text-zinc-500">
                         Serviços disponíveis
                       </span>
-                      <button
-                        type="button"
-                        onClick={addService}
-                        className="inline-flex items-center rounded-full border border-dashed border-zinc-300 px-2.5 py-1 text-[11px] font-medium text-zinc-400 transition-colors hover:border-zinc-400 hover:text-zinc-600 dark:border-zinc-700 dark:text-zinc-500 dark:hover:text-zinc-300"
-                      >
-                        + Adicionar serviço
-                      </button>
+                      {!selectedClientRequiresEditPassword && (
+                        <button
+                          type="button"
+                          onClick={addService}
+                          className="inline-flex items-center rounded-full border border-dashed border-zinc-300 px-2.5 py-1 text-[11px] font-medium text-zinc-400 transition-colors hover:border-zinc-400 hover:text-zinc-600 dark:border-zinc-700 dark:text-zinc-500 dark:hover:text-zinc-300"
+                        >
+                          + Adicionar serviço
+                        </button>
+                      )}
                     </div>
 
                     <div className="space-y-2">
@@ -823,29 +892,50 @@ export default function ClientsPage() {
                       {editServices.map((service, index) => (
                         <div
                           key={service.id}
-                          className="grid gap-2 rounded-md border border-zinc-200 p-2 sm:grid-cols-[minmax(0,1fr)_90px_auto] dark:border-zinc-800"
+                          className={cn(
+                            "grid gap-2 rounded-md border border-zinc-200 p-2 dark:border-zinc-800",
+                            selectedClientRequiresEditPassword
+                              ? "sm:grid-cols-[minmax(0,1fr)_90px]"
+                              : "sm:grid-cols-[minmax(0,1fr)_90px_auto]",
+                          )}
                         >
                           <input
                             type="text"
                             value={service.name}
                             onChange={(e) => updateService(index, "name", e.target.value)}
+                            readOnly={selectedClientRequiresEditPassword}
+                            disabled={selectedClientRequiresEditPassword}
                             placeholder="nome"
-                            className="h-9 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                            className={cn(
+                              "h-9 min-w-0 rounded border px-2 font-mono text-xs",
+                              selectedClientRequiresEditPassword
+                                ? "border-zinc-200 bg-zinc-50 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
+                                : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-900",
+                            )}
                           />
                           <input
                             type="number"
                             value={service.port}
                             onChange={(e) => updateService(index, "port", e.target.value)}
+                            readOnly={selectedClientRequiresEditPassword}
+                            disabled={selectedClientRequiresEditPassword}
                             placeholder="porta"
-                            className="h-9 min-w-0 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                            className={cn(
+                              "h-9 min-w-0 rounded border px-2 font-mono text-xs",
+                              selectedClientRequiresEditPassword
+                                ? "border-zinc-200 bg-zinc-50 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
+                                : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-900",
+                            )}
                           />
-                          <button
-                            type="button"
-                            onClick={() => removeService(index)}
-                            className="h-9 shrink-0 rounded border border-zinc-300 bg-white px-2 text-[11px] text-zinc-600 transition-colors hover:bg-red-50 hover:text-red-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-red-900/40 dark:hover:text-red-200"
-                          >
-                            Remover
-                          </button>
+                          {!selectedClientRequiresEditPassword && (
+                            <button
+                              type="button"
+                              onClick={() => removeService(index)}
+                              className="h-9 shrink-0 rounded border border-zinc-300 bg-white px-2 text-[11px] text-zinc-600 transition-colors hover:bg-red-50 hover:text-red-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-red-900/40 dark:hover:text-red-200"
+                            >
+                              Remover
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -875,23 +965,27 @@ export default function ClientsPage() {
                   )}
 
                   <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={handleSaveClick}
-                      disabled={saving || !hasUnsavedChanges}
-                      className="inline-flex h-9 items-center justify-center rounded bg-zinc-900 px-4 text-sm font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-                    >
-                      {saving ? "Salvando..." : "Salvar alterações"}
-                    </button>
-                    {hasUnsavedChanges && (
-                      <button
-                        type="button"
-                        onClick={resetEditFormFromSaved}
-                        disabled={saving}
-                        className="inline-flex h-9 items-center justify-center rounded border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                      >
-                        Desfazer alterações
-                      </button>
+                    {!selectedClientRequiresEditPassword && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleSaveClick}
+                          disabled={saving || !hasUnsavedChanges}
+                          className="inline-flex h-9 items-center justify-center rounded bg-zinc-900 px-4 text-sm font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                        >
+                          {saving ? "Salvando..." : "Salvar alterações"}
+                        </button>
+                        {hasUnsavedChanges && (
+                          <button
+                            type="button"
+                            onClick={resetEditFormFromSaved}
+                            disabled={saving}
+                            className="inline-flex h-9 items-center justify-center rounded border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                          >
+                            Desfazer alterações
+                          </button>
+                        )}
+                      </>
                     )}
                     <button
                       type="button"

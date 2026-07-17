@@ -2,14 +2,20 @@ import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
 import { createWebSocketServer, closeWebSocketServer } from "../lib/server/websocket/index";
+import { version } from "../package.json";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME || "localhost";
-const port = parseInt(process.env.PORT || "3002", 10);
+const port = parseInt(process.env.PORT || "8001", 10);
 const wsPath = process.env.WS_PATH || "/ws";
 
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
+
+function padLine(content: string, width = 67): string {
+  const truncated = content.length > width ? content.slice(0, width) : content;
+  return truncated.padEnd(width, " ");
+}
 
 async function main() {
   await app.prepare();
@@ -25,13 +31,14 @@ async function main() {
   });
 
   server.listen(port, () => {
+    const mode = dev ? "development" : "production";
     console.log(`
 ╔═══════════════════════════════════════════════════════════════════╗
-║                    Freeceptor Server                               ║
+║${padLine(`  Freeceptor Server v${version}`)}║
 ╠═══════════════════════════════════════════════════════════════════╣
-║  HTTP Server:     http://${hostname}:${port}                            ║
-║  WebSocket:       ws://${hostname}:${port}${wsPath}                           ║
-║  Mode:            ${dev ? "development" : "production"}                                    ║
+║${padLine(`  HTTP Server:     http://${hostname}:${port}`)}║
+║${padLine(`  WebSocket:       ws://${hostname}:${port}${wsPath}`)}║
+║${padLine(`  Mode:            ${mode}`)}║
 ╚═══════════════════════════════════════════════════════════════════╝
 `);
   });

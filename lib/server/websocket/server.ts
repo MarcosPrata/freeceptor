@@ -44,7 +44,7 @@ export function createWebSocketServer(config: WebSocketServerConfig = {}): WebSo
 
     console.log(`[WebSocket] Server attached to HTTP server at path ${path}`);
   } else {
-    const wsPort = port || parseInt(process.env.WS_PORT || "3002", 10);
+    const wsPort = port || parseInt(process.env.WS_PORT || "8001", 10);
     wss = new WebSocketServer({ port: wsPort, path });
     console.log(`[WebSocket] Server listening on port ${wsPort}${path}`);
   }

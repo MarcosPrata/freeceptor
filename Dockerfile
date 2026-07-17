@@ -14,7 +14,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
-ENV PORT=3002
+ENV PORT=8001
 
 # Instala dependências de produção (tsx está em dependencies)
 COPY package.json package-lock.json ./
@@ -31,9 +31,9 @@ COPY --from=builder /app/server ./server
 COPY --from=builder /app/lib ./lib
 COPY --from=builder /app/types ./types
 
-EXPOSE 3002
+EXPOSE 8001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-  CMD wget -qO- http://localhost:3002/ || exit 1
+  CMD wget -qO- http://localhost:8001/ || exit 1
 
 CMD ["node", "--import", "tsx", "server/index.ts"]

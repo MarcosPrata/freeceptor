@@ -1,10 +1,10 @@
 {
   "name": "freeceptor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "scripts": {
     "dev": "TURBOPACK= tsx server/index.ts",
-    "dev:next": "next dev -p 3002",
+    "dev:next": "next dev -p 8001",
     "build": "next build",
     "start": "node --import tsx server/index.ts",
     "lint": "eslint",

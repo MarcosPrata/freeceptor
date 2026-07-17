@@ -25,7 +25,26 @@ export async function setClientAuth(
   const col = await collection();
   const id = buildId(serverName, clientId);
   const normalizedPassword = password?.trim() || undefined;
+  const updatedAt = new Date().toISOString();
 
+  if (normalizedPassword) {
+    await col.updateOne(
+      { _id: id },
+      {
+        $set: {
+          _id: id,
+          serverName,
+          clientId,
+          password: normalizedPassword,
+          updatedAt,
+        },
+      },
+      { upsert: true },
+    );
+    return;
+  }
+
+  // Remove senha explicitamente (undefined no $set é ignorado pelo driver).
   await col.updateOne(
     { _id: id },
     {
@@ -33,9 +52,9 @@ export async function setClientAuth(
         _id: id,
         serverName,
         clientId,
-        password: normalizedPassword,
-        updatedAt: new Date().toISOString(),
+        updatedAt,
       },
+      $unset: { password: "" },
     },
     { upsert: true },
   );

@@ -20,12 +20,12 @@ services:
       dockerfile: Dockerfile
     container_name: freeceptor-app
     ports:
-      - "${PORT:-3002}:3002"
+      - "${PORT:-8001}:8001"
     environment:
       - NODE_ENV=production
       - MONGODB_URI=mongodb://mongo:27017/freeceptor
       - MONGODB_DB=${MONGODB_DB:-freeceptor}
-      - PORT=3002
+      - PORT=8001
       - WS_PATH=${WS_PATH:-/ws}
     depends_on:
       mongo:

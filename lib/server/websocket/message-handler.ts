@@ -1,6 +1,7 @@
 import type { WebSocket } from "ws";
 import { clientManager } from "./client-manager";
 import { setClientAuth } from "../client-auth";
+import { clearClientConfigOverride } from "../client-config";
 import { verifyOrCreateServerConfig } from "../server-config";
 import type {
   WebSocketMessage,
@@ -61,7 +62,11 @@ async function handleRegister(socket: WebSocket, message: RegisterMessage): Prom
     localServices || []
   );
 
-  await setClientAuth(serverName, clientId, clientPassword);
+  await Promise.all([
+    setClientAuth(serverName, clientId, clientPassword),
+    // Descarta override antigo do Freeceptor — o client conectado é a fonte da verdade.
+    clearClientConfigOverride(serverName, clientId),
+  ]);
 
   const ack: RegisterAckMessage = {
     type: "register_ack",
