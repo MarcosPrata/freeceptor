@@ -242,17 +242,91 @@ async function readRequest(request: Request, context: RouteContext) {
     responseHeaders,
   });
 
-  if (proxyRawResponseBody) {
-    return new NextResponse(proxyRawResponseBody, {
-      status: responseStatus,
-      headers: responseHeaders,
+  return buildOutboundResponse(
+    responseStatus,
+    responseHeaders,
+    responseBody,
+    proxyRawResponseBody,
+  );
+}
+
+/**
+ * Builds the HTTP response for the caller.
+ * Proxy-to-client bodies arrive as parsed JSON objects or raw strings (e.g. HTML).
+ * Using NextResponse.json on a string would double-encode it ("\\n..."), which
+ * breaks Swagger UI and other non-JSON responses.
+ *
+ * Statuses 204/205/304 must not carry a body (Fetch Response constructor throws).
+ */
+function buildOutboundResponse(
+  status: number,
+  headers: Record<string, string>,
+  body: unknown,
+  rawBody?: ArrayBuffer | null,
+): NextResponse {
+  const outboundHeaders = sanitizeProxyResponseHeaders(headers);
+
+  if (isNullBodyStatus(status)) {
+    return new NextResponse(null, {
+      status,
+      headers: outboundHeaders,
     });
   }
 
-  return NextResponse.json(responseBody, {
-    status: responseStatus,
-    headers: responseHeaders,
+  if (rawBody) {
+    return new NextResponse(rawBody, {
+      status,
+      headers: outboundHeaders,
+    });
+  }
+
+  if (typeof body === "string") {
+    return new NextResponse(body, {
+      status,
+      headers: outboundHeaders,
+    });
+  }
+
+  if (body === null || body === undefined) {
+    return new NextResponse(null, {
+      status,
+      headers: outboundHeaders,
+    });
+  }
+
+  return NextResponse.json(body, {
+    status,
+    headers: outboundHeaders,
   });
+}
+
+function isNullBodyStatus(status: number): boolean {
+  return status === 204 || status === 205 || status === 304;
+}
+
+function sanitizeProxyResponseHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const hopByHop = new Set([
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    // Body may be re-encoded after WebSocket transport; let the runtime set length.
+    "content-length",
+  ]);
+
+  const cleaned: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    if (!hopByHop.has(key.toLowerCase())) {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
 }
 
 function generateRequestId(): string {
