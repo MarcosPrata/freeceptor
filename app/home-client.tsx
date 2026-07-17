@@ -16,7 +16,7 @@ import {
 } from "@/lib/import-export";
 
 type ApiRequestLog = {
-  id: number;
+  id: string;
   timestamp: string;
   method: string;
   path: string;
@@ -238,7 +238,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [expandedIds, setExpandedIds] = useState<number[]>([]);
+  const [expandedIds, setExpandedIds] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<"requests" | "routes">("requests");
   const [configRouteId, setConfigRouteId] = useState<string | null>(null);
   const [configStatus, setConfigStatus] = useState<string>("200");
@@ -440,7 +440,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     configProxyServiceName,
   ]);
 
-  function toggleLogExpanded(id: number) {
+  function toggleLogExpanded(id: string) {
     setExpandedIds((prev) =>
       prev.includes(id) ? prev.filter((logId) => logId !== id) : [...prev, id],
     );

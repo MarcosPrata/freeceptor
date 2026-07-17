@@ -1,7 +1,7 @@
 import { getDb } from "@/lib/server/mongo";
 
 export type ApiRequestLog = {
-  id: number;
+  id: string;
   timestamp: string;
   method: string;
   path: string;
@@ -172,12 +172,6 @@ function mergeStatInto(target: ApiRouteStat, source: ApiRouteStat): void {
   }
 }
 
-function parseLogIndexFromId(id: string): number {
-  const [head] = id.split(":");
-  const value = Number(head);
-  return Number.isNaN(value) ? 0 : value;
-}
-
 function mapConfig(config: ApiRouteConfig | RouteConfigDoc): ApiRouteConfig {
   return {
     ...config,
@@ -279,7 +273,7 @@ export async function getRequestLogs(
 
   return docs.map((doc) => {
     return {
-      id: parseLogIndexFromId(doc._id),
+      id: String(doc._id),
       timestamp: doc.timestamp,
       method: doc.method,
       path: doc.path,
