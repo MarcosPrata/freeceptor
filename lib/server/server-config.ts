@@ -44,7 +44,10 @@ export async function verifyOrCreateServerConfig(
 
   const currentPassword = existing.password?.trim() ?? "";
   if (currentPassword !== expectedPassword) {
-    return { ok: false, message: "server_name ou senha inválidos." };
+    return {
+      ok: false,
+      message: "Nome do servidor ou senha incorretos. Confira e tente novamente.",
+    };
   }
 
   return { ok: true, serverName: normalized };
@@ -91,4 +94,65 @@ export async function ensureServerConfigExists(serverName: string): Promise<stri
     { upsert: true },
   );
   return normalized;
+}
+
+/**
+ * Define ou remove a senha do server.
+ * Se já houver senha, `currentPassword` precisa bater.
+ * `password` vazio remove a senha.
+ */
+export async function setServerPassword(
+  serverName: string,
+  password: string,
+  currentPassword?: string,
+): Promise<{ ok: boolean; message?: string; hasPassword?: boolean }> {
+  const normalized = normalizeServerName(serverName);
+  if (!normalized) {
+    return { ok: false, message: "server_name é obrigatório." };
+  }
+
+  const collection = await serverConfigsCollection();
+  const existing = await collection.findOne({ _id: normalized });
+  if (!existing) {
+    return { ok: false, message: "Servidor não encontrado." };
+  }
+
+  const hasPassword = Boolean(existing.password?.trim());
+  if (hasPassword) {
+    const provided = currentPassword?.trim() ?? "";
+    if (existing.password!.trim() !== provided) {
+      return { ok: false, message: "Senha atual inválida." };
+    }
+  }
+
+  const nextPassword = password.trim();
+  if (nextPassword) {
+    await collection.updateOne(
+      { _id: normalized },
+      { $set: { password: nextPassword } },
+    );
+    return { ok: true, hasPassword: true };
+  }
+
+  await collection.updateOne(
+    { _id: normalized },
+    { $unset: { password: "" } },
+  );
+  return { ok: true, hasPassword: false };
+}
+
+/** Apaga o server e todos os dados relacionados (APIs, rotas, logs, clients). */
+export async function deleteServerAndAllData(serverName: string): Promise<void> {
+  const normalized = normalizeServerName(serverName);
+  if (!normalized) return;
+
+  const db = await getDb();
+  await Promise.all([
+    db.collection("api_configs").deleteMany({ serverName: normalized }),
+    db.collection("route_configs").deleteMany({ serverName: normalized }),
+    db.collection("request_logs").deleteMany({ serverName: normalized }),
+    db.collection("client_auth").deleteMany({ serverName: normalized }),
+    db.collection("client_configs").deleteMany({ serverName: normalized }),
+    db.collection("server_configs").deleteOne({ _id: normalized }),
+  ]);
 }

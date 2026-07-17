@@ -120,6 +120,26 @@ class ClientManager {
     );
   }
 
+  disconnectAllForServer(serverName: string): void {
+    const normalized = serverName.trim().toLowerCase();
+    let removed = false;
+
+    for (const [key, client] of this.clients.entries()) {
+      if (client.serverName.trim().toLowerCase() !== normalized) continue;
+      try {
+        client.socket.close(1000, "Server deleted");
+      } catch {
+        // ignore
+      }
+      this.clients.delete(key);
+      removed = true;
+    }
+
+    if (removed) {
+      this.notifyClientUpdate(normalized);
+    }
+  }
+
   getAllClients(): ClientInfo[] {
     return Array.from(this.clients.values()).map(this.toClientInfo);
   }

@@ -248,6 +248,16 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [deleteApiName, setDeleteApiName] = useState<string | null>(null);
   const [deleteRouteTarget, setDeleteRouteTarget] = useState<ApiRouteStat | null>(null);
   const [clearRequestsOpen, setClearRequestsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsHasPassword, setSettingsHasPassword] = useState(false);
+  const [settingsCurrentPassword, setSettingsCurrentPassword] = useState("");
+  const [settingsNewPassword, setSettingsNewPassword] = useState("");
+  const [settingsConfirmPassword, setSettingsConfirmPassword] = useState("");
+  const [settingsPasswordMessage, setSettingsPasswordMessage] = useState<string | null>(null);
+  const [settingsPasswordSaving, setSettingsPasswordSaving] = useState(false);
+  const [settingsDeleteConfirm, setSettingsDeleteConfirm] = useState("");
+  const [settingsDeleteError, setSettingsDeleteError] = useState<string | null>(null);
+  const [settingsDeleting, setSettingsDeleting] = useState(false);
   const [apiConfigOpen, setApiConfigOpen] = useState(false);
   const [apiProxyModeType, setApiProxyModeType] = useState<ProxyModeType>("disabled");
   const [apiProxyUrl, setApiProxyUrl] = useState("");
@@ -649,6 +659,121 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     window.addEventListener("pointermove", onMove, { passive: false });
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
+  }
+
+  function clearLocalSession() {
+    authenticatedRef.current = false;
+    try {
+      sessionStorage.removeItem("fc_auth");
+      sessionStorage.removeItem("fc_server");
+      sessionStorage.removeItem("fc_selected_api");
+      sessionStorage.removeItem("fc_active_tab");
+      sessionStorage.removeItem("fc_config_state");
+    } catch {
+      // ignore
+    }
+    hasLoadedOnce.current = false;
+    setAuthenticated(false);
+    setCurrentServerName("");
+    setSelectedApi("");
+    setApiList([]);
+    setLogs([]);
+    setRoutes([]);
+    setUnreadByApi({});
+    sseRef.current?.close();
+  }
+
+  async function openSettings() {
+    setSettingsOpen(true);
+    setSettingsCurrentPassword("");
+    setSettingsNewPassword("");
+    setSettingsConfirmPassword("");
+    setSettingsPasswordMessage(null);
+    setSettingsDeleteConfirm("");
+    setSettingsDeleteError(null);
+    try {
+      const res = await fetch("/api/server/settings");
+      if (res.ok) {
+        const data = (await res.json()) as { hasPassword?: boolean };
+        setSettingsHasPassword(Boolean(data.hasPassword));
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function saveServerPassword(remove: boolean) {
+    setSettingsPasswordMessage(null);
+    if (!remove) {
+      if (settingsNewPassword !== settingsConfirmPassword) {
+        setSettingsPasswordMessage("A confirmação não confere com a nova senha.");
+        return;
+      }
+    }
+    setSettingsPasswordSaving(true);
+    try {
+      const res = await fetch("/api/server/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentPassword: settingsHasPassword
+            ? settingsCurrentPassword
+            : undefined,
+          password: remove ? "" : settingsNewPassword,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        error?: string;
+        hasPassword?: boolean;
+      } | null;
+      if (!res.ok) {
+        setSettingsPasswordMessage(data?.error ?? "Falha ao atualizar senha.");
+        return;
+      }
+      setSettingsHasPassword(Boolean(data?.hasPassword));
+      setSettingsCurrentPassword("");
+      setSettingsNewPassword("");
+      setSettingsConfirmPassword("");
+      setSettingsPasswordMessage(
+        data?.hasPassword ? "Senha atualizada." : "Senha removida.",
+      );
+    } catch {
+      setSettingsPasswordMessage("Falha ao atualizar senha.");
+    } finally {
+      setSettingsPasswordSaving(false);
+    }
+  }
+
+  async function confirmDeleteServer() {
+    setSettingsDeleteError(null);
+    if (
+      settingsDeleteConfirm.trim().toLowerCase() !==
+      currentServerName.trim().toLowerCase()
+    ) {
+      setSettingsDeleteError("Digite o nome do servidor exatamente para confirmar.");
+      return;
+    }
+    setSettingsDeleting(true);
+    try {
+      const res = await fetch("/api/server/settings", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmName: settingsDeleteConfirm.trim() }),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      if (!res.ok) {
+        setSettingsDeleteError(data?.error ?? "Falha ao deletar servidor.");
+        return;
+      }
+      setSettingsOpen(false);
+      clearLocalSession();
+    } catch {
+      setSettingsDeleteError("Falha ao deletar servidor.");
+    } finally {
+      setSettingsDeleting(false);
+    }
   }
 
   async function confirmDeleteApi() {
@@ -1383,7 +1508,15 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                     password: loginPassword,
                   }),
                 });
-                if (!res.ok) throw new Error(await res.text());
+                if (!res.ok) {
+                  const errBody = (await res.json().catch(() => null)) as {
+                    error?: string;
+                  } | null;
+                  throw new Error(
+                    errBody?.error ||
+                      "Não foi possível entrar. Confira os dados e tente novamente.",
+                  );
+                }
                 const data = (await res.json()) as {
                   ok: boolean;
                   serverName: string;
@@ -1401,10 +1534,12 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                   setLoading(true);
                   return;
                 }
-                throw new Error("Falha ao autenticar.");
+                throw new Error("Não foi possível entrar. Tente novamente.");
               } catch (err) {
                 setLoginError(
-                  err instanceof Error ? err.message : "Falha ao autenticar servidor.",
+                  err instanceof Error
+                    ? err.message
+                    : "Não foi possível entrar. Tente novamente.",
                 );
               } finally {
                 setLoginSubmitting(false);
@@ -1554,6 +1689,18 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
             </a>
             <button
               type="button"
+              title="Configurações do servidor"
+              aria-label="Configurações do servidor"
+              onClick={() => void openSettings()}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-zinc-500 transition-colors hover:border-zinc-400 hover:bg-zinc-50 hover:text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
+              </svg>
+            </button>
+            <button
+              type="button"
               title="Sair do servidor"
               aria-label="Sair do servidor"
               onClick={async () => {
@@ -1562,24 +1709,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                 } catch {
                   // ignore
                 } finally {
-                  authenticatedRef.current = false;
-                  try {
-                    sessionStorage.removeItem("fc_auth");
-                    sessionStorage.removeItem("fc_server");
-                    sessionStorage.removeItem("fc_selected_api");
-                    sessionStorage.removeItem("fc_active_tab");
-                    sessionStorage.removeItem("fc_config_state");
-                  } catch {
-                    // ignore
-                  }
-                  hasLoadedOnce.current = false;
-                  setAuthenticated(false);
-                  setCurrentServerName("");
-                  setSelectedApi("");
-                  setApiList([]);
-                  setLogs([]);
-                  setRoutes([]);
-                  sseRef.current?.close();
+                  clearLocalSession();
                 }
               }}
               className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 bg-white text-zinc-500 transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:bg-red-950/40 dark:hover:text-red-400"
@@ -2847,6 +2977,174 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                 {wildcardConverting ? "Convertendo…" : "Confirmar"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Server settings modal */}
+      {settingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  Configurações do servidor
+                </h2>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  Servidor:{" "}
+                  <code className="font-mono text-zinc-700 dark:text-zinc-300">
+                    {currentServerName}
+                  </code>
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Fechar"
+                onClick={() => setSettingsOpen(false)}
+                className="flex h-7 w-7 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-zinc-200"
+              >
+                ✕
+              </button>
+            </div>
+
+            <section className="mt-5">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                Senha do servidor
+              </h3>
+              <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                {settingsHasPassword
+                  ? "Este servidor está protegido por senha. Você pode alterá-la ou removê-la."
+                  : "Este servidor não tem senha. Defina uma para proteger o acesso."}
+              </p>
+
+              <div className="mt-3 grid gap-2">
+                {settingsHasPassword && (
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+                      Senha atual
+                    </span>
+                    <input
+                      type="password"
+                      autoComplete="current-password"
+                      value={settingsCurrentPassword}
+                      onChange={(e) => setSettingsCurrentPassword(e.target.value)}
+                      className="h-8 rounded border border-zinc-300 bg-white px-2 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    />
+                  </label>
+                )}
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+                    {settingsHasPassword ? "Nova senha" : "Senha"}
+                  </span>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={settingsNewPassword}
+                    onChange={(e) => setSettingsNewPassword(e.target.value)}
+                    className="h-8 rounded border border-zinc-300 bg-white px-2 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+                    Confirmar senha
+                  </span>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={settingsConfirmPassword}
+                    onChange={(e) => setSettingsConfirmPassword(e.target.value)}
+                    className="h-8 rounded border border-zinc-300 bg-white px-2 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                  />
+                </label>
+              </div>
+
+              {settingsPasswordMessage && (
+                <p
+                  className={cn(
+                    "mt-2 text-[11px]",
+                    settingsPasswordMessage.includes("Falha") ||
+                      settingsPasswordMessage.includes("inválida") ||
+                      settingsPasswordMessage.includes("não confere")
+                      ? "text-red-600 dark:text-red-400"
+                      : "text-emerald-600 dark:text-emerald-400",
+                  )}
+                >
+                  {settingsPasswordMessage}
+                </p>
+              )}
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    settingsPasswordSaving ||
+                    !settingsNewPassword.trim() ||
+                    (settingsHasPassword && !settingsCurrentPassword)
+                  }
+                  onClick={() => void saveServerPassword(false)}
+                  className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                >
+                  {settingsPasswordSaving
+                    ? "Salvando..."
+                    : settingsHasPassword
+                      ? "Alterar senha"
+                      : "Definir senha"}
+                </button>
+                {settingsHasPassword && (
+                  <button
+                    type="button"
+                    disabled={
+                      settingsPasswordSaving || !settingsCurrentPassword
+                    }
+                    onClick={() => void saveServerPassword(true)}
+                    className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                  >
+                    Remover senha
+                  </button>
+                )}
+              </div>
+            </section>
+
+            <section className="mt-6 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/60 dark:bg-red-950/30">
+              <h3 className="text-xs font-semibold text-red-700 dark:text-red-300">
+                Zona de perigo
+              </h3>
+              <p className="mt-1 text-xs text-red-700/90 dark:text-red-300/90">
+                Deletar o servidor remove permanentemente todas as APIs, rotas,
+                requisições e configurações de clients associados. Esta ação não
+                pode ser desfeita.
+              </p>
+              <label className="mt-3 flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-red-700 dark:text-red-300">
+                  Digite <code className="font-mono">{currentServerName}</code>{" "}
+                  para confirmar
+                </span>
+                <input
+                  type="text"
+                  value={settingsDeleteConfirm}
+                  onChange={(e) => setSettingsDeleteConfirm(e.target.value)}
+                  className="h-8 rounded border border-red-300 bg-white px-2 font-mono text-xs text-zinc-800 dark:border-red-900 dark:bg-zinc-950 dark:text-zinc-100"
+                  placeholder={currentServerName}
+                />
+              </label>
+              {settingsDeleteError && (
+                <p className="mt-2 text-[11px] text-red-600 dark:text-red-400">
+                  {settingsDeleteError}
+                </p>
+              )}
+              <button
+                type="button"
+                disabled={
+                  settingsDeleting ||
+                  settingsDeleteConfirm.trim().toLowerCase() !==
+                    currentServerName.trim().toLowerCase()
+                }
+                onClick={() => void confirmDeleteServer()}
+                className="mt-3 rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-60 dark:bg-red-700 dark:hover:bg-red-600"
+              >
+                {settingsDeleting ? "Deletando..." : "Deletar servidor"}
+              </button>
+            </section>
           </div>
         </div>
       )}
