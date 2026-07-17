@@ -87,6 +87,20 @@ class ClientManager {
     return false;
   }
 
+  updateClientConfig(
+    serverName: string,
+    clientId: string,
+    update: { clientName: string; localServices: ProxyServiceInfo[] },
+  ): boolean {
+    const client = this.getClient(serverName, clientId);
+    if (!client) return false;
+
+    client.clientName = update.clientName;
+    client.localServices = update.localServices;
+    this.notifyClientUpdate(serverName);
+    return true;
+  }
+
   getClient(serverName: string, clientId: string): ConnectedClient | undefined {
     const key = this.buildClientKey(serverName, clientId);
     return this.clients.get(key);
@@ -224,6 +238,14 @@ declare global {
   var __freeceptorClientManager: ClientManager | undefined;
 }
 
-export const clientManager =
-  globalThis.__freeceptorClientManager ??
-  (globalThis.__freeceptorClientManager = new ClientManager());
+// Em dev, o HMR reavalia o módulo mas reusa a instância em globalThis.
+// Sem atualizar o prototype, métodos novos (ex.: updateClientConfig) ficam "missing".
+const existingManager = globalThis.__freeceptorClientManager;
+if (existingManager) {
+  Object.setPrototypeOf(existingManager, ClientManager.prototype);
+  globalThis.__freeceptorClientManager = existingManager;
+} else {
+  globalThis.__freeceptorClientManager = new ClientManager();
+}
+
+export const clientManager = globalThis.__freeceptorClientManager;

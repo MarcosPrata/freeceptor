@@ -22,5 +22,6 @@ export type {
   ResponseMessage,
   ErrorMessage,
   ClientListMessage,
+  ConfigUpdateMessage,
   PendingRequest,
 } from "./types";

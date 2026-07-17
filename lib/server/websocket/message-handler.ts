@@ -1,7 +1,10 @@
 import type { WebSocket } from "ws";
 import { clientManager } from "./client-manager";
 import { setClientAuth } from "../client-auth";
-import { clearClientConfigOverride } from "../client-config";
+import {
+  clearClientConfigOverride,
+  getClientConfigOverride,
+} from "../client-config";
 import { verifyOrCreateServerConfig } from "../server-config";
 import type {
   WebSocketMessage,
@@ -11,7 +14,23 @@ import type {
   RegisterAckMessage,
   HeartbeatAckMessage,
   ErrorMessage,
+  ProxyServiceInfo,
 } from "./types";
+
+function servicesMatch(
+  a: ProxyServiceInfo[] | undefined,
+  b: ProxyServiceInfo[] | undefined,
+): boolean {
+  const left = [...(a ?? [])]
+    .map((s) => `${s.name}:${s.port}`)
+    .sort()
+    .join("|");
+  const right = [...(b ?? [])]
+    .map((s) => `${s.name}:${s.port}`)
+    .sort()
+    .join("|");
+  return left === right;
+}
 
 function send(socket: WebSocket, message: WebSocketMessage): void {
   if (socket.readyState === 1) {
@@ -56,18 +75,34 @@ async function handleRegister(socket: WebSocket, message: RegisterMessage): Prom
 
   // Persiste a senha ANTES de registrar/notificar o SSE — senão a UI recebe
   // requiresEditPassword: false e só atualiza no próximo disconnect/reconnect.
-  await Promise.all([
-    setClientAuth(serverName, clientId, clientPassword),
-    // Descarta override antigo do Freeceptor — o client conectado é a fonte da verdade.
-    clearClientConfigOverride(serverName, clientId),
-  ]);
+  await setClientAuth(serverName, clientId, clientPassword);
+
+  const override = await getClientConfigOverride(serverName, clientId);
+  const incomingName = clientName || clientId;
+  const incomingServices = localServices || [];
+
+  // Se o client já trouxe a config do override (após sync), limpa o override.
+  // Se ainda diverge, mantém o override e empurra config_update.
+  const overrideMatches =
+    !!override &&
+    override.clientName.trim() === incomingName.trim() &&
+    servicesMatch(override.localServices, incomingServices);
+
+  if (override && overrideMatches) {
+    await clearClientConfigOverride(serverName, clientId);
+  }
+
+  const effectiveName =
+    override && !overrideMatches ? override.clientName : incomingName;
+  const effectiveServices =
+    override && !overrideMatches ? override.localServices : incomingServices;
 
   clientManager.registerClient(
     socket,
     clientId,
-    clientName || clientId,
+    effectiveName,
     serverName,
-    localServices || []
+    effectiveServices,
   );
 
   const ack: RegisterAckMessage = {
@@ -75,6 +110,14 @@ async function handleRegister(socket: WebSocket, message: RegisterMessage): Prom
     success: true,
   };
   send(socket, ack);
+
+  if (override && !overrideMatches) {
+    send(socket, {
+      type: "config_update",
+      clientName: override.clientName,
+      localServices: override.localServices,
+    });
+  }
 }
 
 function handleHeartbeat(socket: WebSocket, message: HeartbeatMessage): void {

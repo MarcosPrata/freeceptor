@@ -35,7 +35,8 @@ export type WebSocketMessage =
   | RequestMessage
   | ResponseMessage
   | ErrorMessage
-  | ClientListMessage;
+  | ClientListMessage
+  | ConfigUpdateMessage;
 
 export type RegisterMessage = {
   type: "register";
@@ -94,6 +95,13 @@ export type ErrorMessage = {
 export type ClientListMessage = {
   type: "client_list";
   clients: ClientInfo[];
+};
+
+/** Freeceptor UI → client: aplica nome/serviços sem precisar editar no agent. */
+export type ConfigUpdateMessage = {
+  type: "config_update";
+  clientName: string;
+  localServices: ProxyServiceInfo[];
 };
 
 export type PendingRequest = {

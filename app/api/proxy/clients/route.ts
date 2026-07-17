@@ -3,6 +3,7 @@ import { getMergedClient, getMergedClientsByServer } from "@/lib/server/proxy-cl
 import { setClientConfigOverride } from "@/lib/server/client-config";
 import { clientRequiresEditPassword } from "@/lib/server/client-auth";
 import { getServerSession } from "@/lib/server/server-session";
+import { clientManager } from "@/lib/server/websocket";
 import type { ProxyServiceInfo } from "@/types/proxy-client";
 
 export async function GET(request: NextRequest) {
@@ -111,22 +112,36 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
+    const normalizedServices = localServices.map((service) => ({
+      name: service.name.trim(),
+      host: service.host?.trim() || "localhost",
+      port: Number(service.port),
+    }));
+    const normalizedName = clientName.trim();
+
     const override = await setClientConfigOverride(
       session.serverName,
       clientId,
       {
-        clientName: clientName.trim(),
-        localServices: localServices.map((service) => ({
-          name: service.name.trim(),
-          host: service.host?.trim() || "localhost",
-          port: Number(service.port),
-        })),
+        clientName: normalizedName,
+        localServices: normalizedServices,
       },
     );
 
+    // Atualiza o client em memória e empurra a config pelo WebSocket.
+    clientManager.updateClientConfig(session.serverName, clientId, {
+      clientName: normalizedName,
+      localServices: normalizedServices,
+    });
+    const pushed = clientManager.sendToClient(session.serverName, clientId, {
+      type: "config_update",
+      clientName: normalizedName,
+      localServices: normalizedServices,
+    });
+
     const client = await getMergedClient(session.serverName, clientId);
 
-    return NextResponse.json({ ok: true, override, client });
+    return NextResponse.json({ ok: true, override, client, pushed });
   } catch (err) {
     console.error("Error updating proxy client:", err);
     return NextResponse.json(
