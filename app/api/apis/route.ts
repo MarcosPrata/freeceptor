@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   getAllApiConfigs,
   setApiConfig,
+  setApiOrder,
   deleteApiAndAllData,
   type ApiConfig,
 } from "@/lib/server/request-log";
@@ -60,6 +61,24 @@ export async function POST(request: Request) {
 
   const saved = await setApiConfig(serverName, config);
   return NextResponse.json(saved);
+}
+
+export async function PUT(request: Request) {
+  const serverName = getServerFromCookie(request);
+  if (!serverName) return unauthorized();
+
+  const body = await request.json().catch(() => null);
+  const { order } = (body ?? {}) as { order?: string[] };
+
+  if (!Array.isArray(order) || order.some((name) => typeof name !== "string")) {
+    return NextResponse.json(
+      { error: "order deve ser um array de apiNames." },
+      { status: 400 },
+    );
+  }
+
+  const apis = await setApiOrder(serverName, order);
+  return NextResponse.json(apis);
 }
 
 export async function DELETE(request: Request) {

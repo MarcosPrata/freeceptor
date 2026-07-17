@@ -57,6 +57,8 @@ export type ApiConfig = {
   proxyToClient?: boolean;
   proxyClientId?: string;
   proxyServiceName?: string;
+  /** Ordem de exibição na UI (menor = mais à esquerda). */
+  sortOrder?: number;
 };
 
 export type ResolvedProxyConfig = {
@@ -96,7 +98,15 @@ type ListenerEntry = {
   listener: ChangeListener;
 };
 
+type ActivityListener = (apiName: string) => void;
+
+type ActivityEntry = {
+  serverName: string;
+  listener: ActivityListener;
+};
+
 const listeners = new Set<ListenerEntry>();
+const activityListeners = new Set<ActivityEntry>();
 
 async function logsCollection() {
   const db = await getDb();
@@ -197,6 +207,10 @@ function mapApiConfig(doc: ApiConfig | ApiConfigDoc): ApiConfig {
     proxyToClient: Boolean(doc.proxyToClient),
     proxyClientId: doc.proxyClientId?.trim() ?? "",
     proxyServiceName: doc.proxyServiceName?.trim() ?? "",
+    sortOrder:
+      typeof doc.sortOrder === "number" && Number.isFinite(doc.sortOrder)
+        ? doc.sortOrder
+        : undefined,
   };
 }
 
@@ -234,6 +248,7 @@ export async function addRequestLog(
     });
 
   await notifyChange(serverName, normalizedApi);
+  notifyRequestActivity(serverName, normalizedApi);
 }
 
 export async function getRequestLogs(
@@ -611,12 +626,36 @@ export async function getApiConfig(
   return mapApiConfig(doc);
 }
 
+async function nextApiSortOrder(serverName: string): Promise<number> {
+  const collection = await apiConfigsCollection();
+  const docs = await collection
+    .find({ serverName }, { projection: { sortOrder: 1 } })
+    .toArray();
+  let max = -1;
+  for (const doc of docs) {
+    if (typeof doc.sortOrder === "number" && doc.sortOrder > max) {
+      max = doc.sortOrder;
+    }
+  }
+  return max + 1;
+}
+
 export async function setApiConfig(
   serverName: string,
   config: ApiConfig,
 ): Promise<ApiConfig> {
   const collection = await apiConfigsCollection();
   const normalized = mapApiConfig(config);
+  const existing = await collection.findOne({
+    serverName,
+    apiName: normalized.apiName,
+  });
+  const sortOrder =
+    typeof normalized.sortOrder === "number"
+      ? normalized.sortOrder
+      : typeof existing?.sortOrder === "number"
+        ? existing.sortOrder
+        : await nextApiSortOrder(serverName);
 
   await collection.updateOne(
     { serverName, apiName: normalized.apiName },
@@ -629,18 +668,48 @@ export async function setApiConfig(
         proxyToClient: normalized.proxyToClient,
         proxyClientId: normalized.proxyClientId,
         proxyServiceName: normalized.proxyServiceName,
+        sortOrder,
       },
     },
     { upsert: true },
   );
 
-  return normalized;
+  return { ...normalized, sortOrder };
 }
 
 export async function getAllApiConfigs(serverName: string): Promise<ApiConfig[]> {
   const collection = await apiConfigsCollection();
   const docs = await collection.find({ serverName }).toArray();
-  return docs.map((doc) => mapApiConfig(doc));
+  return docs
+    .map((doc) => mapApiConfig(doc))
+    .sort((a, b) => {
+      const ao = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      const bo = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      if (ao !== bo) return ao - bo;
+      return a.apiName.localeCompare(b.apiName);
+    });
+}
+
+/** Persiste a ordem das APIs (lista de apiNames da esquerda para a direita). */
+export async function setApiOrder(
+  serverName: string,
+  order: string[],
+): Promise<ApiConfig[]> {
+  const collection = await apiConfigsCollection();
+  const normalizedOrder = order
+    .map((name) => normalizeApiName(name))
+    .filter(Boolean);
+
+  await Promise.all(
+    normalizedOrder.map((apiName, index) =>
+      collection.updateOne(
+        { serverName, apiName },
+        { $set: { sortOrder: index } },
+      ),
+    ),
+  );
+
+  return getAllApiConfigs(serverName);
 }
 
 export async function deleteApiConfig(
@@ -785,6 +854,18 @@ export function subscribeToChanges(
   };
 }
 
+/** Notifica qualquer atividade de request em qualquer API do server (para badges). */
+export function subscribeToServerActivity(
+  serverName: string,
+  listener: ActivityListener,
+): () => void {
+  const entry: ActivityEntry = { serverName, listener };
+  activityListeners.add(entry);
+  return () => {
+    activityListeners.delete(entry);
+  };
+}
+
 async function notifyChange(serverName: string, apiName: string) {
   if (listeners.size === 0) return;
   const normalizedApi = normalizeApiName(apiName);
@@ -793,6 +874,19 @@ async function notifyChange(serverName: string, apiName: string) {
     const snapshot = await getSnapshot(serverName, normalizedApi);
     try {
       entry.listener(snapshot);
+    } catch {
+      // ignore listener errors
+    }
+  }
+}
+
+function notifyRequestActivity(serverName: string, apiName: string) {
+  if (activityListeners.size === 0) return;
+  const normalizedApi = normalizeApiName(apiName);
+  for (const entry of activityListeners) {
+    if (entry.serverName !== serverName) continue;
+    try {
+      entry.listener(normalizedApi);
     } catch {
       // ignore listener errors
     }

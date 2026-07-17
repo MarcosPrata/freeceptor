@@ -68,6 +68,7 @@ type ApiConfig = {
   proxyToClient?: boolean;
   proxyClientId?: string;
   proxyServiceName?: string;
+  sortOrder?: number;
 };
 
 type ProxyServiceInfo = {
@@ -222,6 +223,26 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   // API selection
   const [selectedApi, setSelectedApi] = useState("");
   const [apiList, setApiList] = useState<ApiConfig[]>([]);
+  /** Contagem de requests em APIs não selecionadas — só na sessão atual. */
+  const [unreadByApi, setUnreadByApi] = useState<Record<string, number>>({});
+  const [draggingApi, setDraggingApi] = useState<string | null>(null);
+  /** Índice de inserção durante o drag (0 = antes do 1º, length = depois do último). */
+  const [dropInsertIndex, setDropInsertIndex] = useState<number | null>(null);
+  const [dragGhost, setDragGhost] = useState<{
+    apiName: string;
+    width: number;
+    height: number;
+    left: number;
+    top: number;
+    selected: boolean;
+    proxyToClient: boolean;
+    proxyMode: boolean;
+    unread: number;
+  } | null>(null);
+  const draggingApiRef = useRef<string | null>(null);
+  const dropInsertIndexRef = useRef<number | null>(null);
+  const dragGhostRef = useRef<HTMLDivElement | null>(null);
+  const dragGhostOffsetRef = useRef({ x: 0, y: 0 });
   const [newApiName, setNewApiName] = useState("");
   const [showNewApiInput, setShowNewApiInput] = useState(false);
   const [deleteApiName, setDeleteApiName] = useState<string | null>(null);
@@ -289,6 +310,18 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const authenticatedRef = useRef(initialSession?.authenticated ?? false);
   // Tracks the previous selectedApi to detect real API switches (vs. initial mount).
   const prevSelectedApiRef = useRef<string | null>(null);
+  const selectedApiRef = useRef(selectedApi);
+  const apiListRef = useRef(apiList);
+  const apiStripRef = useRef<HTMLDivElement | null>(null);
+  const apiDragMovedRef = useRef(false);
+
+  useEffect(() => {
+    selectedApiRef.current = selectedApi;
+  }, [selectedApi]);
+
+  useEffect(() => {
+    apiListRef.current = apiList;
+  }, [apiList]);
 
   // Restore UI state (selected API + active tab + open route config form) from
   // sessionStorage synchronously before the browser paints so the user doesn't
@@ -462,6 +495,162 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     }
   }
 
+  function selectApi(apiName: string) {
+    setSelectedApi(apiName);
+    setUnreadByApi((prev) => {
+      const key = apiName.toLowerCase();
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }
+
+  function getApiInsertIndexFromX(clientX: number): number {
+    const strip = apiStripRef.current;
+    const list = apiListRef.current;
+    if (!strip || list.length === 0) return 0;
+
+    for (let i = 0; i < list.length; i++) {
+      const el = strip.querySelector<HTMLElement>(
+        `[data-api-chip="${CSS.escape(list[i].apiName)}"]`,
+      );
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (clientX < rect.left + rect.width / 2) return i;
+    }
+    return list.length;
+  }
+
+  async function reorderApisToIndex(fromName: string, insertIndex: number) {
+    const list = apiListRef.current;
+    const fromIndex = list.findIndex((a) => a.apiName === fromName);
+    if (fromIndex < 0) return;
+
+    // Mesma posição: soltar à esquerda ou à direita de si mesmo.
+    if (insertIndex === fromIndex || insertIndex === fromIndex + 1) return;
+
+    const next = [...list];
+    const [moved] = next.splice(fromIndex, 1);
+    let adjusted = insertIndex;
+    if (fromIndex < insertIndex) adjusted -= 1;
+    adjusted = Math.max(0, Math.min(adjusted, next.length));
+    next.splice(adjusted, 0, moved);
+    setApiList(next);
+
+    try {
+      const res = await fetch("/api/apis", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order: next.map((a) => a.apiName) }),
+      });
+      if (res.ok) {
+        const apis = (await res.json()) as ApiConfig[];
+        setApiList(apis);
+      } else {
+        await loadApiList();
+      }
+    } catch {
+      await loadApiList();
+    }
+  }
+
+  function positionApiDragGhost(clientX: number, clientY: number) {
+    const el = dragGhostRef.current;
+    if (!el) return;
+    const { x: ox, y: oy } = dragGhostOffsetRef.current;
+    el.style.transform = `translate3d(${clientX - ox}px, ${clientY - oy}px, 0)`;
+  }
+
+  function beginApiChipDrag(
+    event: React.PointerEvent<HTMLElement>,
+    apiName: string,
+  ) {
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("[data-api-delete]")) return;
+
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const chipRect = event.currentTarget.getBoundingClientRect();
+    let dragging = false;
+
+    const updateIndicator = (clientX: number) => {
+      const insertAt = getApiInsertIndexFromX(clientX);
+      dropInsertIndexRef.current = insertAt;
+      setDropInsertIndex((prev) => (prev === insertAt ? prev : insertAt));
+    };
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      const dist = Math.hypot(ev.clientX - startX, ev.clientY - startY);
+      if (!dragging) {
+        if (dist < 5) return;
+        dragging = true;
+        apiDragMovedRef.current = true;
+        draggingApiRef.current = apiName;
+        const offset = {
+          x: startX - chipRect.left,
+          y: startY - chipRect.top,
+        };
+        dragGhostOffsetRef.current = offset;
+        const api = apiListRef.current.find((a) => a.apiName === apiName);
+        setDraggingApi(apiName);
+        setDragGhost({
+          apiName,
+          width: chipRect.width,
+          height: chipRect.height,
+          left: ev.clientX - offset.x,
+          top: ev.clientY - offset.y,
+          selected: selectedApiRef.current === apiName,
+          proxyToClient: Boolean(api?.proxyToClient),
+          proxyMode: Boolean(api?.proxyMode),
+          unread: unreadByApi[apiName.toLowerCase()] ?? 0,
+        });
+        requestAnimationFrame(() => {
+          positionApiDragGhost(ev.clientX, ev.clientY);
+        });
+      }
+      ev.preventDefault();
+      positionApiDragGhost(ev.clientX, ev.clientY);
+      updateIndicator(ev.clientX);
+    };
+
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+
+      if (!dragging) {
+        selectApi(apiName);
+        return;
+      }
+
+      const insertAt =
+        dropInsertIndexRef.current ?? getApiInsertIndexFromX(ev.clientX);
+      const from = draggingApiRef.current;
+      draggingApiRef.current = null;
+      dropInsertIndexRef.current = null;
+      setDraggingApi(null);
+      setDropInsertIndex(null);
+      setDragGhost(null);
+      if (from) {
+        void reorderApisToIndex(from, insertAt);
+      }
+
+      // Evita click fantasma após o drag.
+      window.setTimeout(() => {
+        apiDragMovedRef.current = false;
+      }, 0);
+    };
+
+    apiDragMovedRef.current = false;
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }
+
   async function confirmDeleteApi() {
     if (!deleteApiName) return;
     try {
@@ -470,6 +659,13 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       });
       setDeleteApiName(null);
       const wasSelected = selectedApi === deleteApiName;
+      setUnreadByApi((prev) => {
+        const key = deleteApiName.toLowerCase();
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
       if (wasSelected) setSelectedApi("");
       await loadApiList();
       // If was selected and there are no more APIs, reset loading state
@@ -926,11 +1122,22 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       try {
         const data = JSON.parse(event.data) as {
           type?: string;
+          apiName?: string;
           logs?: ApiRequestLog[];
           routes?: ApiRouteStat[];
           clients?: ProxyClientInfo[];
         };
         if (data.type === "heartbeat") return; // ignorar keepalive
+        if (data.type === "api_activity" && data.apiName) {
+          const activeApi = data.apiName.toLowerCase();
+          if (activeApi !== selectedApiRef.current.toLowerCase()) {
+            setUnreadByApi((prev) => ({
+              ...prev,
+              [activeApi]: (prev[activeApi] ?? 0) + 1,
+            }));
+          }
+          return;
+        }
         if (data.logs) setLogs(data.logs);
         if (data.routes) setRoutes(data.routes);
         if (data.clients) setConnectedClients(data.clients);
@@ -1389,7 +1596,13 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         {/* API Selector */}
         <div className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
           <div className="flex min-w-0 flex-1 items-center">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            <div
+              ref={apiStripRef}
+              className={cn(
+                "flex min-w-0 flex-1 flex-wrap items-center gap-2",
+                draggingApi ? "select-none" : undefined,
+              )}
+            >
               {apiList.length === 0 && !showNewApiInput && (
                 <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
                   Nenhuma API criada
@@ -1397,40 +1610,105 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
               )}
 
               {/* APIs from apiList */}
-              {apiList.map((api) => (
-                <div key={api.apiName} className="group relative inline-flex items-center">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedApi(api.apiName)}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-full py-1 pl-2.5 pr-6 text-[11px] font-medium transition-colors",
-                      selectedApi === api.apiName
-                        ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
-                        : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-                    )}
+              {apiList.map((api, index) => {
+                const unread = unreadByApi[api.apiName.toLowerCase()] ?? 0;
+                const isSelected = selectedApi === api.apiName;
+                const draggedIndex = draggingApi
+                  ? apiList.findIndex((a) => a.apiName === draggingApi)
+                  : -1;
+                const showInsertBefore =
+                  draggingApi != null &&
+                  dropInsertIndex === index &&
+                  dropInsertIndex !== draggedIndex &&
+                  dropInsertIndex !== draggedIndex + 1;
+
+                return (
+                  <div
+                    key={api.apiName}
+                    className="inline-flex items-center"
                   >
-                    {api.apiName}
-                    {api.proxyToClient ? (
-                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
-                    ) : api.proxyMode ? (
-                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
-                    ) : null}
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Deletar API ${api.apiName}`}
-                    onClick={(e) => { e.stopPropagation(); setDeleteApiName(api.apiName); }}
-                    className={cn(
-                      "absolute right-1 flex h-4 w-4 items-center justify-center rounded-full text-[9px] transition-colors",
-                      selectedApi === api.apiName
-                        ? "text-zinc-400 hover:bg-zinc-700 hover:text-zinc-50 dark:text-zinc-600 dark:hover:bg-zinc-200 dark:hover:text-zinc-900"
-                        : "text-zinc-400 hover:bg-red-100 hover:text-red-600 dark:text-zinc-600 dark:hover:bg-red-900/40 dark:hover:text-red-400",
+                    {showInsertBefore && (
+                      <span
+                        aria-hidden
+                        className="mx-0.5 h-6 w-0.5 shrink-0 rounded-full bg-orange-500"
+                      />
                     )}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
+                    <div
+                      data-api-chip={api.apiName}
+                      onPointerDown={(e) => beginApiChipDrag(e, api.apiName)}
+                      className={cn(
+                        "group relative inline-flex touch-none items-center",
+                        draggingApi === api.apiName && "opacity-40",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        title="Arraste para reordenar"
+                        className={cn(
+                          "inline-flex cursor-grab items-center gap-1.5 rounded-full py-1 pl-2 pr-6 text-[11px] font-medium transition-colors active:cursor-grabbing",
+                          isSelected
+                            ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
+                            : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
+                        )}
+                      >
+                        <svg
+                          aria-hidden
+                          viewBox="0 0 10 16"
+                          className="h-3.5 w-2.5 shrink-0 text-zinc-400 opacity-50 dark:text-zinc-500"
+                          fill="currentColor"
+                        >
+                          <circle cx="3" cy="3" r="1.2" />
+                          <circle cx="7" cy="3" r="1.2" />
+                          <circle cx="3" cy="8" r="1.2" />
+                          <circle cx="7" cy="8" r="1.2" />
+                          <circle cx="3" cy="13" r="1.2" />
+                          <circle cx="7" cy="13" r="1.2" />
+                        </svg>
+                        {!isSelected && unread > 0 && (
+                          <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-orange-500 px-1 text-[9px] font-semibold leading-none text-white">
+                            {unread > 99 ? "99+" : unread}
+                          </span>
+                        )}
+                        {api.apiName}
+                        {api.proxyToClient ? (
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
+                        ) : api.proxyMode ? (
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+                        ) : null}
+                      </button>
+                      <button
+                        type="button"
+                        data-api-delete
+                        aria-label={`Deletar API ${api.apiName}`}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteApiName(api.apiName);
+                        }}
+                        className={cn(
+                          "absolute right-1 flex h-4 w-4 items-center justify-center rounded-full text-[9px] transition-colors",
+                          isSelected
+                            ? "text-zinc-400 hover:bg-zinc-700 hover:text-zinc-50 dark:text-zinc-600 dark:hover:bg-zinc-200 dark:hover:text-zinc-900"
+                            : "text-zinc-400 hover:bg-red-100 hover:text-red-600 dark:text-zinc-600 dark:hover:bg-red-900/40 dark:hover:text-red-400",
+                        )}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {draggingApi != null &&
+                dropInsertIndex === apiList.length &&
+                dropInsertIndex !==
+                  apiList.findIndex((a) => a.apiName === draggingApi) &&
+                dropInsertIndex !==
+                  apiList.findIndex((a) => a.apiName === draggingApi) + 1 && (
+                  <span
+                    aria-hidden
+                    className="mx-0.5 h-6 w-0.5 shrink-0 self-center rounded-full bg-orange-500"
+                  />
+                )}
 
               {/* Add new API */}
               {showNewApiInput ? (
@@ -1446,7 +1724,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                       body: JSON.stringify({ apiName: name }),
                     });
                     await loadApiList();
-                    setSelectedApi(name);
+                    selectApi(name);
                     setNewApiName("");
                     setShowNewApiInput(false);
                   }}
@@ -3138,6 +3416,53 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                 )}
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {dragGhost && (
+        <div
+          ref={dragGhostRef}
+          aria-hidden
+          className="pointer-events-none fixed left-0 top-0 z-[100] will-change-transform"
+          style={{
+            width: dragGhost.width,
+            height: dragGhost.height,
+            transform: `translate3d(${dragGhost.left}px, ${dragGhost.top}px, 0)`,
+          }}
+        >
+          <div
+            className={cn(
+              "inline-flex h-full w-full items-center gap-1.5 rounded-full py-1 pl-2 pr-3 text-[11px] font-medium shadow-lg ring-1 ring-black/10 dark:ring-white/10",
+              dragGhost.selected
+                ? "bg-zinc-900 text-zinc-50 dark:bg-zinc-50 dark:text-zinc-900"
+                : "border border-zinc-300 bg-white text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300",
+            )}
+          >
+            <svg
+              aria-hidden
+              viewBox="0 0 10 16"
+              className="h-3.5 w-2.5 shrink-0 text-zinc-400 opacity-50"
+              fill="currentColor"
+            >
+              <circle cx="3" cy="3" r="1.2" />
+              <circle cx="7" cy="3" r="1.2" />
+              <circle cx="3" cy="8" r="1.2" />
+              <circle cx="7" cy="8" r="1.2" />
+              <circle cx="3" cy="13" r="1.2" />
+              <circle cx="7" cy="13" r="1.2" />
+            </svg>
+            {!dragGhost.selected && dragGhost.unread > 0 && (
+              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-orange-500 px-1 text-[9px] font-semibold leading-none text-white">
+                {dragGhost.unread > 99 ? "99+" : dragGhost.unread}
+              </span>
+            )}
+            {dragGhost.apiName}
+            {dragGhost.proxyToClient ? (
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
+            ) : dragGhost.proxyMode ? (
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+            ) : null}
           </div>
         </div>
       )}

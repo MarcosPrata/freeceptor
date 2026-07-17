@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   getSnapshot,
   subscribeToChanges,
+  subscribeToServerActivity,
 } from "@/lib/server/request-log";
 import { getServerFromCookie } from "@/lib/server/server-session";
 import { getMergedClientsByServer } from "@/lib/server/proxy-clients";
@@ -56,6 +57,13 @@ export async function GET(request: Request) {
         send({ type: "update", ...payload });
       });
 
+      const unsubscribeActivity = subscribeToServerActivity(
+        serverName,
+        (activeApiName) => {
+          send({ type: "api_activity", apiName: activeApiName });
+        },
+      );
+
       const unsubscribeClients = clientManager.onClientUpdate((updatedServer) => {
         if (updatedServer !== serverName) return;
         void getMergedClientsByServer(serverName).then((clients) => {
@@ -72,6 +80,7 @@ export async function GET(request: Request) {
         closed = true;
         clearInterval(heartbeatId);
         unsubscribe();
+        unsubscribeActivity();
         unsubscribeClients();
         controller.close();
       }
