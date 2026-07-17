@@ -54,6 +54,14 @@ async function handleRegister(socket: WebSocket, message: RegisterMessage): Prom
     return;
   }
 
+  // Persiste a senha ANTES de registrar/notificar o SSE — senão a UI recebe
+  // requiresEditPassword: false e só atualiza no próximo disconnect/reconnect.
+  await Promise.all([
+    setClientAuth(serverName, clientId, clientPassword),
+    // Descarta override antigo do Freeceptor — o client conectado é a fonte da verdade.
+    clearClientConfigOverride(serverName, clientId),
+  ]);
+
   clientManager.registerClient(
     socket,
     clientId,
@@ -61,12 +69,6 @@ async function handleRegister(socket: WebSocket, message: RegisterMessage): Prom
     serverName,
     localServices || []
   );
-
-  await Promise.all([
-    setClientAuth(serverName, clientId, clientPassword),
-    // Descarta override antigo do Freeceptor — o client conectado é a fonte da verdade.
-    clearClientConfigOverride(serverName, clientId),
-  ]);
 
   const ack: RegisterAckMessage = {
     type: "register_ack",
