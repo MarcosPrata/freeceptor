@@ -2,6 +2,7 @@ import type {
   ApiRouteConfig,
   DynamicMockCondition,
   DynamicMockRule,
+  MockJoinOperator,
   MockOperator,
 } from "@/lib/server/request-log";
 import { extractPathParams } from "@/lib/server/request-log";
@@ -136,13 +137,28 @@ export function matchCondition(
   }
 }
 
+export function matchRule(
+  rule: DynamicMockRule,
+  ctx: DynamicMockContext,
+): boolean {
+  const list = rule.conditions ?? [];
+  if (list.length === 0) return false;
+  let acc = matchCondition(list[0]!, ctx);
+  for (let i = 1; i < list.length; i++) {
+    const join: MockJoinOperator = rule.joins?.[i - 1] ?? "and";
+    const next = matchCondition(list[i]!, ctx);
+    acc = join === "or" ? acc || next : acc && next;
+  }
+  return acc;
+}
+
 export function resolveDynamicMock(
   config: ApiRouteConfig,
   ctx: DynamicMockContext,
 ): DynamicMockResult {
   const rules: DynamicMockRule[] = config.dynamicRules ?? [];
   for (const rule of rules) {
-    if (matchCondition(rule.condition, ctx)) {
+    if (matchRule(rule, ctx)) {
       return {
         status: rule.status || 200,
         body: rule.body ?? { status: "ok" },

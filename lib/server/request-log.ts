@@ -63,9 +63,13 @@ export type DynamicMockCondition = {
   value?: string;
 };
 
+export type MockJoinOperator = "and" | "or";
+
 export type DynamicMockRule = {
   id: string;
-  condition: DynamicMockCondition;
+  conditions: DynamicMockCondition[];
+  /** joins[i] liga conditions[i] com conditions[i+1]; length === conditions.length - 1 */
+  joins: MockJoinOperator[];
   status: number;
   body: unknown;
   headers: Record<string, string>;
@@ -307,27 +311,57 @@ function routeStatFromConfig(cfg: ApiRouteConfig, apiName: string): ApiRouteStat
   };
 }
 
+function mapMockCondition(raw: unknown): DynamicMockCondition | null {
+  if (!raw || typeof raw !== "object") return null;
+  const condition = raw as Partial<DynamicMockCondition>;
+  return {
+    source: condition.source ?? "query",
+    key: condition.key?.trim() || undefined,
+    bodyKind: condition.bodyKind === "raw" ? "raw" : "json",
+    operator: condition.operator ?? "equals",
+    value: condition.value,
+  };
+}
+
+function normalizeJoins(
+  joins: unknown,
+  conditionCount: number,
+): MockJoinOperator[] {
+  const needed = Math.max(0, conditionCount - 1);
+  const rawList = Array.isArray(joins) ? joins : [];
+  const out: MockJoinOperator[] = [];
+  for (let i = 0; i < needed; i++) {
+    out.push(rawList[i] === "or" ? "or" : "and");
+  }
+  return out;
+}
+
 function mapDynamicRules(rules: unknown): DynamicMockRule[] | undefined {
   if (!Array.isArray(rules)) return undefined;
   const mapped = rules
     .map((raw): DynamicMockRule | null => {
       if (!raw || typeof raw !== "object") return null;
-      const rule = raw as Partial<DynamicMockRule>;
-      const condition = rule.condition;
-      if (!condition || typeof condition !== "object") return null;
+      const rule = raw as Partial<DynamicMockRule> & {
+        condition?: DynamicMockCondition;
+      };
+      let conditions: DynamicMockCondition[] = [];
+      if (Array.isArray(rule.conditions) && rule.conditions.length > 0) {
+        conditions = rule.conditions
+          .map(mapMockCondition)
+          .filter((c): c is DynamicMockCondition => c != null);
+      } else if (rule.condition && typeof rule.condition === "object") {
+        const legacy = mapMockCondition(rule.condition);
+        if (legacy) conditions = [legacy];
+      }
+      if (conditions.length === 0) return null;
       const id =
         typeof rule.id === "string" && rule.id.trim()
           ? rule.id.trim()
           : `rule-${Math.random().toString(36).slice(2, 10)}`;
       return {
         id,
-        condition: {
-          source: condition.source ?? "query",
-          key: condition.key?.trim() || undefined,
-          bodyKind: condition.bodyKind === "raw" ? "raw" : "json",
-          operator: condition.operator ?? "equals",
-          value: condition.value,
-        },
+        conditions,
+        joins: normalizeJoins(rule.joins, conditions.length),
         status: typeof rule.status === "number" ? rule.status : 200,
         body: rule.body ?? { status: "ok" },
         headers:

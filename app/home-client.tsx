@@ -109,13 +109,104 @@ type DynamicMockCondition = {
   value?: string;
 };
 
+type MockJoinOperator = "and" | "or";
+
 type DynamicMockRule = {
   id: string;
-  condition: DynamicMockCondition;
+  conditions: DynamicMockCondition[];
+  joins: MockJoinOperator[];
   status: number;
   body: unknown;
   headers: Record<string, string>;
 };
+
+function emptyMockCondition(): DynamicMockCondition {
+  return {
+    source: "query",
+    key: "",
+    operator: "equals",
+    value: "",
+  };
+}
+
+function normalizeDynamicRule(raw: unknown): DynamicMockRule | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rule = raw as Partial<DynamicMockRule> & {
+    condition?: DynamicMockCondition;
+  };
+  let conditions: DynamicMockCondition[] = [];
+  if (Array.isArray(rule.conditions) && rule.conditions.length > 0) {
+    conditions = rule.conditions.map((c) => ({
+      source: c?.source ?? "query",
+      key: c?.key,
+      bodyKind: c?.bodyKind === "raw" ? "raw" : c?.bodyKind === "json" ? "json" : c?.bodyKind,
+      operator: c?.operator ?? "equals",
+      value: c?.value,
+    }));
+  } else if (rule.condition && typeof rule.condition === "object") {
+    conditions = [
+      {
+        source: rule.condition.source ?? "query",
+        key: rule.condition.key,
+        bodyKind:
+          rule.condition.bodyKind === "raw"
+            ? "raw"
+            : rule.condition.bodyKind === "json"
+              ? "json"
+              : rule.condition.bodyKind,
+        operator: rule.condition.operator ?? "equals",
+        value: rule.condition.value,
+      },
+    ];
+  }
+  if (conditions.length === 0) return null;
+  const needed = conditions.length - 1;
+  const rawJoins = Array.isArray(rule.joins) ? rule.joins : [];
+  const joins: MockJoinOperator[] = [];
+  for (let i = 0; i < needed; i++) {
+    joins.push(rawJoins[i] === "or" ? "or" : "and");
+  }
+  return {
+    id:
+      typeof rule.id === "string" && rule.id.trim()
+        ? rule.id.trim()
+        : newDynamicRuleId(),
+    conditions,
+    joins,
+    status: typeof rule.status === "number" ? rule.status : 200,
+    body: rule.body ?? { status: "ok" },
+    headers:
+      rule.headers && typeof rule.headers === "object" ? rule.headers : {},
+  };
+}
+
+function normalizeDynamicRules(rules: unknown): DynamicMockRule[] {
+  if (!Array.isArray(rules)) return [];
+  return rules
+    .map(normalizeDynamicRule)
+    .filter((r): r is DynamicMockRule => r != null);
+}
+
+function conditionDraftKey(ruleId: string, index: number) {
+  return `${ruleId}:${index}`;
+}
+
+function remapDraftKeysAfterRemove(
+  keys: string[],
+  ruleId: string,
+  removedIndex: number,
+): string[] {
+  const prefix = `${ruleId}:`;
+  return keys
+    .map((key) => {
+      if (!key.startsWith(prefix)) return key;
+      const idx = Number(key.slice(prefix.length));
+      if (!Number.isFinite(idx) || idx === removedIndex) return null;
+      if (idx > removedIndex) return conditionDraftKey(ruleId, idx - 1);
+      return key;
+    })
+    .filter((key): key is string => key != null);
+}
 
 type ApiRouteConfig = {
   apiName: string;
@@ -3374,7 +3465,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           setConfigProxyUrl(match.proxyUrl);
         } else if (match.explicitlyConfigured) {
           setConfigProxyModeType("disabled");
-          const rules = match.dynamicRules ?? [];
+          const rules = normalizeDynamicRules(match.dynamicRules);
           setDynamicRules(rules);
           setExpandedDynamicRuleIds(rules[0] ? [rules[0].id] : []);
           setDraftDynamicRuleIds([]);
@@ -3637,14 +3728,16 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         if (match) config = match;
       }
 
-      const remappedRules = (config.dynamicRules ?? []).map((rule) => {
-        if (rule.condition.source !== "path") return rule;
-        if (rule.condition.key !== oldName) return rule;
-        return {
+      const remappedRules = normalizeDynamicRules(config.dynamicRules).map(
+        (rule) => ({
           ...rule,
-          condition: { ...rule.condition, key: nextName },
-        };
-      });
+          conditions: rule.conditions.map((condition) =>
+            condition.source === "path" && condition.key === oldName
+              ? { ...condition, key: nextName }
+              : condition,
+          ),
+        }),
+      );
 
       const postRes = await fetch("/api/routes", {
         method: "POST",
@@ -5626,7 +5719,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                             <div className="mt-1 space-y-2">
                               <div className="flex items-center justify-between gap-2">
                                 <span className="text-[11px] font-medium text-zinc-500">
-                                  Condições (primeira que bater ganha)
+                                  Regras (primeira que bater ganha)
                                 </span>
                               </div>
                               <button
@@ -5635,23 +5728,22 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                   const id = newDynamicRuleId();
                                   const rule: DynamicMockRule = {
                                     id,
-                                    condition: {
-                                      source: "query",
-                                      key: "",
-                                      operator: "equals",
-                                      value: "",
-                                    },
+                                    conditions: [emptyMockCondition()],
+                                    joins: [],
                                     status: 200,
                                     body: { status: "ok" },
                                     headers: {},
                                   };
                                   setDynamicRules((prev) => [rule, ...prev]);
-                                  setDraftDynamicRuleIds((prev) => [...prev, id]);
+                                  setDraftDynamicRuleIds((prev) => [
+                                    ...prev,
+                                    conditionDraftKey(id, 0),
+                                  ]);
                                   setExpandedDynamicRuleIds((prev) => [...prev, id]);
                                 }}
                                 className="flex w-full items-center justify-center rounded-md border border-dashed border-zinc-300 px-3 py-2 text-[11px] text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
                               >
-                                + Adicionar condição
+                                + Adicionar regra
                               </button>
                               {dynamicRules.map((rule, ruleIndex) => {
                                 const expanded = expandedDynamicRuleIds.includes(rule.id);
@@ -5679,15 +5771,15 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                         draggingRuleId === rule.id && "opacity-40",
                                       )}
                                     >
-                                      <div className="flex items-center gap-1.5 px-2 py-1.5">
+                                      <div className="flex items-start gap-1.5 px-2 py-1.5">
                                         <button
                                           type="button"
                                           title="Arraste para reordenar"
-                                          aria-label="Arrastar condição"
+                                          aria-label="Arrastar regra"
                                           onPointerDown={(e) =>
                                             beginDynamicRuleDrag(e, rule.id)
                                           }
-                                          className="inline-flex h-5 w-4 shrink-0 cursor-grab touch-none items-center justify-center text-zinc-400 active:cursor-grabbing"
+                                          className="inline-flex h-8 w-4 shrink-0 cursor-grab touch-none items-center justify-center text-zinc-400 active:cursor-grabbing"
                                         >
                                           <svg
                                             aria-hidden
@@ -5703,25 +5795,165 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                             <circle cx="7" cy="13" r="1.2" />
                                           </svg>
                                         </button>
-                                        <ConditionPillInput
-                                          value={rule.condition}
-                                          pathParams={pathParams}
-                                          draft={draftDynamicRuleIds.includes(rule.id)}
-                                          onDraftConsumed={() =>
-                                            setDraftDynamicRuleIds((prev) =>
-                                              prev.filter((id) => id !== rule.id),
-                                            )
-                                          }
-                                          onChange={(next) =>
-                                            setDynamicRules((prev) =>
-                                              prev.map((r) =>
-                                                r.id === rule.id
-                                                  ? { ...r, condition: next }
-                                                  : r,
-                                              ),
-                                            )
-                                          }
-                                        />
+                                        <div className="flex min-w-0 flex-1 flex-col gap-2">
+                                          {rule.conditions.map((condition, condIndex) => (
+                                            <div
+                                              key={`${rule.id}-${condIndex}`}
+                                              className="flex items-center gap-1"
+                                            >
+                                              {condIndex > 0 && (
+                                                <div
+                                                  role="group"
+                                                  aria-label="Operador entre condições"
+                                                  className="grid h-8 shrink-0 grid-cols-2 gap-0.5 rounded border border-zinc-300 bg-zinc-50 p-0.5 dark:border-zinc-700 dark:bg-zinc-900"
+                                                >
+                                                  {(["and", "or"] as const).map((op) => (
+                                                    <button
+                                                      key={op}
+                                                      type="button"
+                                                      aria-pressed={
+                                                        (rule.joins[condIndex - 1] ??
+                                                          "and") === op
+                                                      }
+                                                      onClick={() =>
+                                                        setDynamicRules((prev) =>
+                                                          prev.map((r) => {
+                                                            if (r.id !== rule.id) return r;
+                                                            const joins = [...r.joins];
+                                                            joins[condIndex - 1] = op;
+                                                            return { ...r, joins };
+                                                          }),
+                                                        )
+                                                      }
+                                                      className={cn(
+                                                        "rounded px-1.5 text-[10px] font-semibold uppercase tracking-wide transition-colors",
+                                                        (rule.joins[condIndex - 1] ??
+                                                          "and") === op
+                                                          ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-zinc-50"
+                                                          : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+                                                      )}
+                                                    >
+                                                      {op}
+                                                    </button>
+                                                  ))}
+                                                </div>
+                                              )}
+                                              <ConditionPillInput
+                                                value={condition}
+                                                pathParams={pathParams}
+                                                draft={draftDynamicRuleIds.includes(
+                                                  conditionDraftKey(rule.id, condIndex),
+                                                )}
+                                                onDraftConsumed={() =>
+                                                  setDraftDynamicRuleIds((prev) =>
+                                                    prev.filter(
+                                                      (id) =>
+                                                        id !==
+                                                        conditionDraftKey(
+                                                          rule.id,
+                                                          condIndex,
+                                                        ),
+                                                    ),
+                                                  )
+                                                }
+                                                onChange={(next) =>
+                                                  setDynamicRules((prev) =>
+                                                    prev.map((r) => {
+                                                      if (r.id !== rule.id) return r;
+                                                      const conditions = [
+                                                        ...r.conditions,
+                                                      ];
+                                                      conditions[condIndex] = next;
+                                                      return { ...r, conditions };
+                                                    }),
+                                                  )
+                                                }
+                                              />
+                                              {rule.conditions.length > 1 && (
+                                                <button
+                                                  type="button"
+                                                  title="Remover condição"
+                                                  aria-label="Remover condição"
+                                                  className="shrink-0 text-[10px] text-zinc-400 hover:text-red-500"
+                                                  onClick={() => {
+                                                    setDynamicRules((prev) =>
+                                                      prev.map((r) => {
+                                                        if (r.id !== rule.id) return r;
+                                                        const conditions =
+                                                          r.conditions.filter(
+                                                            (_, i) => i !== condIndex,
+                                                          );
+                                                        const nextJoins: MockJoinOperator[] =
+                                                          [];
+                                                        for (
+                                                          let i = 0;
+                                                          i < conditions.length - 1;
+                                                          i++
+                                                        ) {
+                                                          if (i < condIndex - 1) {
+                                                            nextJoins.push(
+                                                              r.joins[i] ?? "and",
+                                                            );
+                                                          } else if (i === condIndex - 1) {
+                                                            nextJoins.push(
+                                                              r.joins[condIndex - 1] ??
+                                                                "and",
+                                                            );
+                                                          } else {
+                                                            nextJoins.push(
+                                                              r.joins[i + 1] ?? "and",
+                                                            );
+                                                          }
+                                                        }
+                                                        return {
+                                                          ...r,
+                                                          conditions,
+                                                          joins: nextJoins,
+                                                        };
+                                                      }),
+                                                    );
+                                                    setDraftDynamicRuleIds((prev) =>
+                                                      remapDraftKeysAfterRemove(
+                                                        prev,
+                                                        rule.id,
+                                                        condIndex,
+                                                      ),
+                                                    );
+                                                  }}
+                                                >
+                                                  ✕
+                                                </button>
+                                              )}
+                                            </div>
+                                          ))}
+                                          <button
+                                            type="button"
+                                            className="self-start text-[10px] text-zinc-500 underline-offset-2 hover:text-zinc-800 hover:underline dark:hover:text-zinc-200"
+                                            onClick={() => {
+                                              const nextIndex = rule.conditions.length;
+                                              setDynamicRules((prev) =>
+                                                prev.map((r) =>
+                                                  r.id === rule.id
+                                                    ? {
+                                                        ...r,
+                                                        conditions: [
+                                                          ...r.conditions,
+                                                          emptyMockCondition(),
+                                                        ],
+                                                        joins: [...r.joins, "and"],
+                                                      }
+                                                    : r,
+                                                ),
+                                              );
+                                              setDraftDynamicRuleIds((prev) => [
+                                                ...prev,
+                                                conditionDraftKey(rule.id, nextIndex),
+                                              ]);
+                                            }}
+                                          >
+                                            + Adicionar condição
+                                          </button>
+                                        </div>
                                         <button
                                           type="button"
                                           title={
@@ -5734,7 +5966,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                               ? "Ocultar resposta"
                                               : "Mostrar resposta"
                                           }
-                                          className="inline-flex h-6 w-5 shrink-0 items-center justify-center text-[11px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                                          className="inline-flex h-8 w-5 shrink-0 items-center justify-center text-[11px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
                                           onClick={() =>
                                             setExpandedDynamicRuleIds((prev) =>
                                               prev.includes(rule.id)
@@ -5747,13 +5979,15 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                         </button>
                                         <button
                                           type="button"
-                                          className="text-[10px] text-red-500"
+                                          className="inline-flex h-8 shrink-0 items-center text-[10px] text-red-500"
                                           onClick={() => {
                                             setDynamicRules((prev) =>
                                               prev.filter((r) => r.id !== rule.id),
                                             );
                                             setDraftDynamicRuleIds((prev) =>
-                                              prev.filter((id) => id !== rule.id),
+                                              prev.filter(
+                                                (id) => !id.startsWith(`${rule.id}:`),
+                                              ),
                                             );
                                           }}
                                         >
@@ -5764,7 +5998,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                       <div className="space-y-2 border-t border-zinc-100 px-2 py-2 dark:border-zinc-900">
                                         <div className="rounded border border-dashed border-zinc-200 p-2 dark:border-zinc-800">
                                           <span className="mb-1 block text-[10px] font-medium text-zinc-500">
-                                            Resposta se a condição for verdadeira
+                                            Resposta se a regra for verdadeira
                                           </span>
                                           <div className="mb-2 flex flex-wrap gap-2">
                                             <label className="flex items-center gap-1 text-[11px]">
