@@ -1,6 +1,43 @@
 "use client";
 
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, {
+  Children,
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  bracketMatching,
+  defaultHighlightStyle,
+  foldable,
+  foldEffect,
+  foldGutter,
+  foldKeymap,
+  forceParsing,
+  indentOnInput,
+  syntaxHighlighting,
+  syntaxTree,
+  unfoldAll,
+} from "@codemirror/language";
+import { json } from "@codemirror/lang-json";
+import {
+  defaultKeymap,
+  history as codeMirrorHistory,
+  historyKeymap,
+} from "@codemirror/commands";
+import { EditorState } from "@codemirror/state";
+import { oneDark } from "@codemirror/theme-one-dark";
+import {
+  EditorView,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  keymap,
+  lineNumbers,
+} from "@codemirror/view";
 import { cn } from "@/lib/utils";
 import {
   analyzeImportFile,
@@ -231,42 +268,6 @@ function tableHeadCellClass(): string {
   return "border-b border-zinc-300 px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide dark:border-zinc-600";
 }
 
-function renderKeyValueTable(data: Record<string, string | string[]>) {
-  const entries = Object.entries(data);
-  if (!entries.length) {
-    return (
-      <div className="rounded border border-zinc-200 bg-white px-2 py-1 text-[11px] text-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300">
-        (vazio)
-      </div>
-    );
-  }
-
-  return (
-    <div className="max-h-60 overflow-auto rounded border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950">
-      <table className="min-w-full border-separate border-spacing-0 text-[11px]">
-        <thead className={tableHeadClass()}>
-          <tr>
-            <th className={tableHeadCellClass()}>Chave</th>
-            <th className={tableHeadCellClass()}>Valor</th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map(([key, value], index) => (
-            <tr key={key} className={tableRowZebraClass(index)}>
-              <td className="border-b border-zinc-100 px-2 py-1 font-mono text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
-                {key}
-              </td>
-              <td className="break-all border-b border-zinc-100 px-2 py-1 font-mono text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
-                {Array.isArray(value) ? value.join(", ") : value}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 type HeaderRow = { id: string; name: string; value: string };
 
 function newHeaderRowId() {
@@ -316,26 +317,706 @@ function normalizeHeaderRows(rows: HeaderRow[]): HeaderRow[] {
   return [...filled, { id: newHeaderRowId(), name: "", value: "" }];
 }
 
-function HeadersTable({
-  data,
+type ConditionStep =
+  | "source"
+  | "key"
+  | "bodyKind"
+  | "field"
+  | "operator"
+  | "value";
+
+const MOCK_OPERATORS: MockOperator[] = [
+  "equals",
+  "notEquals",
+  "contains",
+  "notContains",
+  "startsWith",
+  "endsWith",
+  "exists",
+  "notExists",
+];
+
+const MOCK_SOURCES: MockMatchSource[] = ["header", "query", "path", "body"];
+
+function operatorNeedsValue(operator: MockOperator): boolean {
+  return operator !== "exists" && operator !== "notExists";
+}
+
+function nextConditionStep(
+  condition: DynamicMockCondition,
+  after: ConditionStep | null,
+): ConditionStep | null {
+  const order = (step: ConditionStep | null): ConditionStep | null => {
+    if (step === null) return "source";
+    if (step === "source") {
+      if (condition.source === "header" || condition.source === "query") {
+        return "key";
+      }
+      if (condition.source === "path") return "key";
+      if (condition.source === "body") return "bodyKind";
+      return "source";
+    }
+    if (step === "bodyKind") {
+      return (condition.bodyKind ?? "json") === "json" ? "field" : "operator";
+    }
+    if (step === "key" || step === "field") return "operator";
+    if (step === "operator") {
+      return operatorNeedsValue(condition.operator) ? "value" : null;
+    }
+    return null;
+  };
+  return order(after);
+}
+
+function clearConditionAfterStep(
+  condition: DynamicMockCondition,
+  step: ConditionStep,
+  pathParams: string[],
+): DynamicMockCondition {
+  if (step === "source") {
+    return {
+      source: condition.source,
+      operator: "equals",
+      key:
+        condition.source === "path"
+          ? pathParams[0] ?? ""
+          : condition.source === "body"
+            ? undefined
+            : "",
+      bodyKind: condition.source === "body" ? "json" : undefined,
+      value: undefined,
+    };
+  }
+  if (step === "bodyKind") {
+    return {
+      ...condition,
+      key:
+        (condition.bodyKind ?? "json") === "json"
+          ? condition.key ?? ""
+          : undefined,
+      operator: "equals",
+      value: undefined,
+    };
+  }
+  if (step === "key" || step === "field") {
+    return {
+      ...condition,
+      operator: "equals",
+      value: undefined,
+    };
+  }
+  if (step === "operator") {
+    return {
+      ...condition,
+      value: operatorNeedsValue(condition.operator)
+        ? condition.value ?? ""
+        : undefined,
+    };
+  }
+  return { ...condition };
+}
+
+function inferCompletedConditionSteps(
+  condition: DynamicMockCondition,
+  draft: boolean,
+): ConditionStep[] {
+  if (draft) return [];
+  const steps: ConditionStep[] = ["source"];
+  if (condition.source === "header" || condition.source === "query") {
+    steps.push("key");
+  } else if (condition.source === "path") {
+    if (condition.key) steps.push("key");
+    else return steps;
+  } else if (condition.source === "body") {
+    steps.push("bodyKind");
+    if ((condition.bodyKind ?? "json") === "json") steps.push("field");
+  }
+  steps.push("operator");
+  if (operatorNeedsValue(condition.operator)) steps.push("value");
+  return steps;
+}
+
+function conditionPillClassName(active = false) {
+  return cn(
+    "inline-flex h-6 max-w-full items-center rounded px-1.5 font-mono text-[11px]",
+    active
+      ? "border border-zinc-400 bg-white text-zinc-900 dark:border-zinc-500 dark:bg-zinc-900 dark:text-zinc-50"
+      : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700",
+  );
+}
+
+function ConditionPillInput({
+  value,
+  onChange,
+  pathParams,
+  draft = false,
+  onDraftConsumed,
 }: {
-  data: Record<string, string | string[]>;
+  value: DynamicMockCondition;
+  onChange: (next: DynamicMockCondition) => void;
+  pathParams: string[];
+  draft?: boolean;
+  onDraftConsumed?: () => void;
 }) {
-  return renderKeyValueTable(data);
+  const [focused, setFocused] = useState(false);
+  const [activeStep, setActiveStep] = useState<ConditionStep | null>(null);
+  const [draftMode, setDraftMode] = useState(draft);
+  const [completedSteps, setCompletedSteps] = useState<ConditionStep[]>(() =>
+    draft ? [] : inferCompletedConditionSteps(value, false),
+  );
+  const [textDraft, setTextDraft] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const skipBlurCommit = useRef(false);
+
+  useEffect(() => {
+    setDraftMode(draft);
+    if (draft) setCompletedSteps([]);
+  }, [draft]);
+
+  const effectiveActive =
+    activeStep ??
+    (focused && completedSteps.length === 0
+      ? ("source" as ConditionStep)
+      : null);
+
+  useEffect(() => {
+    if (
+      effectiveActive === "key" ||
+      effectiveActive === "field" ||
+      effectiveActive === "value"
+    ) {
+      setTextDraft(
+        effectiveActive === "value" ? (value.value ?? "") : (value.key ?? ""),
+      );
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [effectiveActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function consumeDraft() {
+    if (draftMode) {
+      setDraftMode(false);
+      onDraftConsumed?.();
+    }
+  }
+
+  function truncateCompletedBefore(step: ConditionStep) {
+    const rank: Record<ConditionStep, number> = {
+      source: 0,
+      bodyKind: 1,
+      key: 2,
+      field: 2,
+      operator: 3,
+      value: 4,
+    };
+    setCompletedSteps((prev) =>
+      prev.filter((item) => rank[item] < rank[step]),
+    );
+  }
+
+  function openStep(step: ConditionStep) {
+    const cleared = clearConditionAfterStep(value, step, pathParams);
+    truncateCompletedBefore(step);
+    if (step === "source") {
+      onChange({
+        source: "query",
+        operator: "equals",
+        key: "",
+        value: "",
+      });
+      setDraftMode(true);
+      setActiveStep("source");
+      return;
+    }
+    onChange(cleared);
+    setActiveStep(step);
+  }
+
+  function commitSource(source: MockMatchSource) {
+    consumeDraft();
+    const next: DynamicMockCondition = {
+      source,
+      operator: "equals",
+      key:
+        source === "path"
+          ? pathParams[0] ?? ""
+          : source === "body"
+            ? undefined
+            : "",
+      bodyKind: source === "body" ? "json" : undefined,
+      value: undefined,
+    };
+    onChange(next);
+    if (source === "path" && pathParams.length > 0) {
+      setCompletedSteps(["source", "key"]);
+      setActiveStep("operator");
+    } else {
+      setCompletedSteps(["source"]);
+      setActiveStep(nextConditionStep(next, "source"));
+    }
+  }
+
+  function commitBodyKind(bodyKind: MockBodyKind) {
+    const next: DynamicMockCondition = {
+      ...value,
+      bodyKind,
+      key: bodyKind === "json" ? "" : undefined,
+      operator: "equals",
+      value: undefined,
+    };
+    onChange(next);
+    setCompletedSteps(["source", "bodyKind"]);
+    setActiveStep(nextConditionStep(next, "bodyKind"));
+  }
+
+  function commitKeyOrField(raw: string) {
+    const from: ConditionStep =
+      value.source === "body" && (value.bodyKind ?? "json") === "json"
+        ? "field"
+        : "key";
+    const next: DynamicMockCondition = {
+      ...value,
+      key: raw,
+      operator: "equals",
+      value: undefined,
+    };
+    onChange(next);
+    setCompletedSteps((prev) => {
+      const base = prev.filter((s) => s !== "operator" && s !== "value");
+      return base.includes(from) ? base : [...base, from];
+    });
+    setActiveStep(nextConditionStep(next, from));
+  }
+
+  function commitOperator(operator: MockOperator) {
+    const next: DynamicMockCondition = {
+      ...value,
+      operator,
+      value: operatorNeedsValue(operator) ? "" : undefined,
+    };
+    onChange(next);
+    setCompletedSteps((prev) => {
+      const withoutTail = prev.filter((s) => s !== "operator" && s !== "value");
+      return [...withoutTail, "operator"];
+    });
+    setActiveStep(nextConditionStep(next, "operator"));
+  }
+
+  function commitValue(raw: string) {
+    onChange({ ...value, value: raw });
+    setCompletedSteps((prev) =>
+      prev.includes("value") ? prev : [...prev, "value"],
+    );
+    setActiveStep(null);
+  }
+
+  function handleContainerClick() {
+    setFocused(true);
+    if (draftMode || completedSteps.length === 0) {
+      setActiveStep("source");
+      return;
+    }
+    if (!activeStep) {
+      const next = nextConditionStep(
+        value,
+        completedSteps[completedSteps.length - 1] ?? null,
+      );
+      if (next) setActiveStep(next);
+    }
+  }
+
+  const showPlaceholder =
+    !focused &&
+    completedSteps.length === 0 &&
+    !activeStep &&
+    !effectiveActive;
+
+  const showSourcePill =
+    completedSteps.includes("source") && effectiveActive !== "source";
+  const showKeyPill =
+    completedSteps.includes("key") &&
+    effectiveActive !== "key" &&
+    (value.source === "header" ||
+      value.source === "query" ||
+      value.source === "path");
+  const showBodyKindPill =
+    completedSteps.includes("bodyKind") && effectiveActive !== "bodyKind";
+  const showFieldPill =
+    completedSteps.includes("field") && effectiveActive !== "field";
+  const showOperatorPill =
+    completedSteps.includes("operator") && effectiveActive !== "operator";
+  const showValuePill =
+    completedSteps.includes("value") && effectiveActive !== "value";
+
+  return (
+    <div className="min-w-0 flex-1">
+      <div
+        ref={containerRef}
+        role="group"
+        tabIndex={0}
+        onFocus={() => setFocused(true)}
+        onBlur={(e) => {
+          if (!containerRef.current?.contains(e.relatedTarget as Node)) {
+            setFocused(false);
+            if (
+              !skipBlurCommit.current &&
+              (activeStep === "key" ||
+                activeStep === "field" ||
+                activeStep === "value")
+            ) {
+              // blur no input filho já confirma
+            } else if (completedSteps.length > 0 && activeStep === "source") {
+              setActiveStep(null);
+            }
+          }
+        }}
+        onClick={handleContainerClick}
+        className={cn(
+          "flex min-h-8 w-full cursor-text flex-wrap items-center gap-1 rounded border border-zinc-300 bg-white px-1.5 py-0.5 dark:border-zinc-700 dark:bg-zinc-950",
+          focused && "border-zinc-400 dark:border-zinc-500",
+        )}
+      >
+        {showPlaceholder && (
+          <span className="px-0.5 text-[11px] text-zinc-400">
+            Clique para definir a condição
+          </span>
+        )}
+
+        {showSourcePill && (
+          <button
+            type="button"
+            className={conditionPillClassName()}
+            onClick={(e) => {
+              e.stopPropagation();
+              openStep("source");
+            }}
+          >
+            {value.source}
+          </button>
+        )}
+
+        {showBodyKindPill && (
+          <button
+            type="button"
+            className={conditionPillClassName()}
+            onClick={(e) => {
+              e.stopPropagation();
+              openStep("bodyKind");
+            }}
+          >
+            {value.bodyKind ?? "json"}
+          </button>
+        )}
+
+        {showKeyPill && (
+          <button
+            type="button"
+            className={conditionPillClassName()}
+            onClick={(e) => {
+              e.stopPropagation();
+              openStep("key");
+            }}
+          >
+            {value.source === "path"
+              ? `:${value.key || "?"}`
+              : value.key || "chave"}
+          </button>
+        )}
+
+        {showFieldPill && (
+          <button
+            type="button"
+            className={conditionPillClassName()}
+            onClick={(e) => {
+              e.stopPropagation();
+              openStep("field");
+            }}
+          >
+            {value.key || "body"}
+          </button>
+        )}
+
+        {showOperatorPill && (
+          <button
+            type="button"
+            className={conditionPillClassName()}
+            onClick={(e) => {
+              e.stopPropagation();
+              openStep("operator");
+            }}
+          >
+            {value.operator}
+          </button>
+        )}
+
+        {showValuePill && (
+          <button
+            type="button"
+            className={conditionPillClassName()}
+            onClick={(e) => {
+              e.stopPropagation();
+              openStep("value");
+            }}
+          >
+            {value.value || "valor"}
+          </button>
+        )}
+
+        {effectiveActive === "source" && (
+          <select
+            autoFocus
+            className={cn(conditionPillClassName(true), "cursor-pointer")}
+            value=""
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => {
+              const source = e.target.value as MockMatchSource;
+              if (source) commitSource(source);
+            }}
+          >
+            <option value="" disabled>
+              fonte
+            </option>
+            {MOCK_SOURCES.map((source) => (
+              <option key={source} value={source}>
+                {source}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {effectiveActive === "bodyKind" && (
+          <select
+            autoFocus
+            className={cn(conditionPillClassName(true), "cursor-pointer")}
+            value=""
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => {
+              const bodyKind = e.target.value as MockBodyKind;
+              if (bodyKind) commitBodyKind(bodyKind);
+            }}
+          >
+            <option value="" disabled>
+              tipo
+            </option>
+            <option value="json">json</option>
+            <option value="raw">raw</option>
+          </select>
+        )}
+
+        {effectiveActive === "key" && value.source === "path" ? (
+          pathParams.length === 0 ? (
+            <span
+              className="text-[11px] text-amber-600"
+              onClick={(e) => e.stopPropagation()}
+            >
+              Sem :params
+            </span>
+          ) : (
+            <select
+              autoFocus
+              className={cn(conditionPillClassName(true), "cursor-pointer")}
+              value={value.key ?? ""}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                commitKeyOrField(e.target.value);
+              }}
+            >
+              {pathParams.map((name) => (
+                <option key={name} value={name}>
+                  :{name}
+                </option>
+              ))}
+            </select>
+          )
+        ) : null}
+
+        {(effectiveActive === "key" &&
+          (value.source === "header" || value.source === "query")) ||
+        effectiveActive === "field" ||
+        effectiveActive === "value" ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={textDraft}
+            placeholder={
+              effectiveActive === "field"
+                ? "user.id"
+                : effectiveActive === "value"
+                  ? "valor"
+                  : "chave"
+            }
+            className={cn(
+              conditionPillClassName(true),
+              "min-w-[4.5rem] flex-1 bg-transparent outline-none",
+            )}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setTextDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                skipBlurCommit.current = true;
+                if (effectiveActive === "value") commitValue(textDraft);
+                else commitKeyOrField(textDraft);
+                requestAnimationFrame(() => {
+                  skipBlurCommit.current = false;
+                });
+              }
+              if (e.key === "Escape") {
+                setActiveStep(null);
+              }
+            }}
+            onBlur={() => {
+              if (skipBlurCommit.current) return;
+              if (effectiveActive === "value") commitValue(textDraft);
+              else if (
+                effectiveActive === "key" ||
+                effectiveActive === "field"
+              ) {
+                commitKeyOrField(textDraft);
+              }
+            }}
+          />
+        ) : null}
+
+        {effectiveActive === "operator" && (
+          <select
+            autoFocus
+            className={cn(conditionPillClassName(true), "cursor-pointer")}
+            value=""
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => {
+              const operator = e.target.value as MockOperator;
+              if (operator) commitOperator(operator);
+            }}
+          >
+            <option value="" disabled>
+              operador
+            </option>
+            {MOCK_OPERATORS.map((operator) => (
+              <option key={operator} value={operator}>
+                {operator}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {value.source === "path" &&
+        !draftMode &&
+        pathParams.length === 0 &&
+        completedSteps.includes("source") && (
+          <p className="mt-1 text-[10px] text-amber-600">
+            Este path não tem parâmetros (:id). Converta um segmento antes.
+          </p>
+        )}
+    </div>
+  );
+}
+
+function KeyValueViewer({
+  label,
+  data,
+  defaultBodyMode = "table",
+  defaultJsonCollapsed = false,
+}: {
+  label: string;
+  data: Record<string, string | string[]>;
+  defaultBodyMode?: DisplayBodyMode;
+  defaultJsonCollapsed?: boolean;
+}) {
+  const [bulkOpen, setBulkOpen] = useState(defaultBodyMode === "bulk");
+  const flat = toFlatStringRecord(data);
+  const entries = Object.entries(flat);
+  const bulkText = JSON.stringify(flat, null, 2);
+
+  useEffect(() => {
+    setBulkOpen(defaultBodyMode === "bulk");
+  }, [defaultBodyMode]);
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex h-5 items-center justify-between gap-2">
+        <span className="text-[12px] font-semibold leading-none text-zinc-800 dark:text-zinc-100">
+          {label}
+        </span>
+        <button
+          type="button"
+          className="text-[10px] font-medium text-zinc-500 underline-offset-2 hover:text-zinc-800 hover:underline dark:text-zinc-400 dark:hover:text-zinc-200"
+          onClick={() => setBulkOpen((open) => !open)}
+        >
+          {bulkOpen ? "Table" : "Bulk"}
+        </button>
+      </div>
+      {bulkOpen ? (
+        <JsonBulkCodeEditor
+          value={bulkText}
+          readOnly
+          defaultCollapsed={defaultJsonCollapsed}
+        />
+      ) : (
+        <div className="flex max-h-60 flex-col overflow-hidden rounded border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950">
+          <div className="shrink-0 bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-100">
+            <table className="min-w-full table-fixed border-separate border-spacing-0 text-[11px]">
+              <thead>
+                <tr>
+                  <th className={tableHeadCellClass()}>Chave</th>
+                  <th className={tableHeadCellClass()}>Valor</th>
+                </tr>
+              </thead>
+            </table>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <table className="min-w-full table-fixed border-separate border-spacing-0 text-[11px]">
+              <tbody>
+                {entries.length === 0 ? (
+                  <tr className={tableRowZebraClass(0)}>
+                    <td
+                      colSpan={2}
+                      className="border-b border-zinc-100 px-2 py-1 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+                    >
+                      (vazio)
+                    </td>
+                  </tr>
+                ) : (
+                  entries.map(([key, value], index) => (
+                    <tr key={key} className={tableRowZebraClass(index)}>
+                      <td className="border-b border-zinc-100 px-2 py-1 font-mono text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
+                        {key}
+                      </td>
+                      <td className="break-all border-b border-zinc-100 px-2 py-1 font-mono text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
+                        {value}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function HeadersEditor({
   value,
   onChange,
+  defaultBodyMode = "table",
+  defaultJsonCollapsed = false,
 }: {
   value: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
+  defaultBodyMode?: DisplayBodyMode;
+  defaultJsonCollapsed?: boolean;
 }) {
   const [rows, setRows] = useState(() => recordToHeaderRows(value));
-  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(defaultBodyMode === "bulk");
   const [bulkText, setBulkText] = useState(() =>
     JSON.stringify(value, null, 2),
   );
+
+  useEffect(() => {
+    setBulkOpen(defaultBodyMode === "bulk");
+  }, [defaultBodyMode]);
 
   useEffect(() => {
     const fromRows = headerRowsToRecord(rows);
@@ -363,18 +1044,18 @@ function HeadersEditor({
     commitRows(rows.filter((row) => row.id !== id));
   }
 
-  function applyBulk() {
+  function handleBulkTextChange(nextText: string) {
+    setBulkText(nextText);
     try {
-      const parsed = JSON.parse(bulkText || "{}") as unknown;
+      const parsed = JSON.parse(nextText || "{}") as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         return;
       }
       const record = toFlatStringRecord(parsed);
       setRows(recordToHeaderRows(record));
       onChange(record);
-      setBulkOpen(false);
     } catch {
-      // keep bulk editor open while JSON is invalid
+      // Mantém o rascunho inválido enquanto o usuário digita no bulk.
     }
   }
 
@@ -392,25 +1073,15 @@ function HeadersEditor({
             setBulkOpen((open) => !open);
           }}
         >
-          {bulkOpen ? "Table" : "Bulk Edit"}
+          {bulkOpen ? "Table" : "Bulk"}
         </button>
       </div>
       {bulkOpen ? (
-        <div className="flex flex-col gap-1">
-          <textarea
-            rows={5}
-            className="w-full border border-zinc-200 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
-            value={bulkText}
-            onChange={(e) => setBulkText(e.target.value)}
-          />
-          <button
-            type="button"
-            onClick={applyBulk}
-            className="self-end text-[10px] text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
-          >
-            Apply
-          </button>
-        </div>
+        <JsonBulkCodeEditor
+          value={bulkText}
+          onChange={handleBulkTextChange}
+          defaultCollapsed={defaultJsonCollapsed}
+        />
       ) : (
         <div className="max-h-60 overflow-auto rounded border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950">
           <table className="min-w-full border-separate border-spacing-0 text-[11px]">
@@ -470,6 +1141,1322 @@ function HeadersEditor({
             </tbody>
           </table>
         </div>
+      )}
+    </div>
+  );
+}
+
+type JsonValueType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "null"
+  | "object"
+  | "array";
+
+type JsonBodyRow = {
+  id: string;
+  key: string;
+  type: JsonValueType;
+  value: string;
+  children?: JsonBodyRow[];
+};
+
+type JsonBodyContainerMode = "object" | "array";
+
+function newJsonBodyRowId() {
+  return `j-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function emptyJsonBodyRow(): JsonBodyRow {
+  return { id: newJsonBodyRowId(), key: "", type: "string", value: "" };
+}
+
+function isCompositeJsonType(
+  type: JsonValueType,
+): type is "object" | "array" {
+  return type === "object" || type === "array";
+}
+
+/** Placeholder trailing row (no key/value, default string). */
+function isBlankJsonBodyRow(row: JsonBodyRow): boolean {
+  return (
+    !row.key.trim() &&
+    row.type === "string" &&
+    !row.value.trim() &&
+    !row.children?.length
+  );
+}
+
+function detectJsonValueType(value: unknown): JsonValueType {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number" && Number.isFinite(value)) return "number";
+  if (typeof value === "string") return "string";
+  if (Array.isArray(value)) return "array";
+  if (value && typeof value === "object") return "object";
+  return "string";
+}
+
+function primitiveToCell(value: unknown, type: JsonValueType): string {
+  if (type === "null") return "";
+  if (type === "boolean") return value ? "true" : "false";
+  if (type === "number") return String(value ?? "0");
+  return String(value ?? "");
+}
+
+function cellToPrimitive(type: JsonValueType, raw: string): unknown {
+  if (type === "null") return null;
+  if (type === "boolean") return raw === "true";
+  if (type === "number") {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return raw;
+}
+
+function valueToJsonBodyRow(key: string, value: unknown): JsonBodyRow {
+  const type = detectJsonValueType(value);
+  if (type === "object") {
+    return {
+      id: newJsonBodyRowId(),
+      key,
+      type,
+      value: "",
+      children: objectToJsonBodyRows(value),
+    };
+  }
+  if (type === "array") {
+    return {
+      id: newJsonBodyRowId(),
+      key,
+      type,
+      value: "",
+      children: arrayToJsonBodyRows(value as unknown[]),
+    };
+  }
+  return {
+    id: newJsonBodyRowId(),
+    key,
+    type,
+    value: primitiveToCell(value, type),
+  };
+}
+
+function objectToJsonBodyRows(value: unknown): JsonBodyRow[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [emptyJsonBodyRow()];
+  }
+  const rows = Object.entries(value as Record<string, unknown>).map(
+    ([key, item]) => valueToJsonBodyRow(key, item),
+  );
+  return normalizeJsonBodyRows(rows, "object");
+}
+
+function arrayToJsonBodyRows(value: unknown[]): JsonBodyRow[] {
+  const rows = value.map((item, index) =>
+    valueToJsonBodyRow(String(index), item),
+  );
+  return normalizeJsonBodyRows(rows, "array");
+}
+
+function jsonBodyRowToValue(row: JsonBodyRow): unknown {
+  if (row.type === "object") {
+    return jsonBodyRowsToObject(row.children ?? []);
+  }
+  if (row.type === "array") {
+    return jsonBodyRowsToArray(row.children ?? []);
+  }
+  return cellToPrimitive(row.type, row.value);
+}
+
+function jsonBodyRowsToObject(rows: JsonBodyRow[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (!key) continue;
+    out[key] = jsonBodyRowToValue(row);
+  }
+  return out;
+}
+
+function jsonBodyRowsToArray(rows: JsonBodyRow[]): unknown[] {
+  const out: unknown[] = [];
+  for (const row of rows) {
+    if (isBlankJsonBodyRow(row)) continue;
+    out.push(jsonBodyRowToValue(row));
+  }
+  return out;
+}
+
+function normalizeJsonBodyRows(
+  rows: JsonBodyRow[],
+  mode: JsonBodyContainerMode,
+): JsonBodyRow[] {
+  const filled = rows
+    .filter((row) => !isBlankJsonBodyRow(row))
+    .map((row) => {
+      if (!isCompositeJsonType(row.type)) {
+        return {
+          id: row.id,
+          key: row.key,
+          type: row.type,
+          value: row.value,
+        };
+      }
+      return {
+        ...row,
+        value: "",
+        children: normalizeJsonBodyRows(
+          row.children ?? [emptyJsonBodyRow()],
+          row.type,
+        ),
+      };
+    });
+
+  if (mode === "array") {
+    return [
+      ...filled.map((row, index) => ({ ...row, key: String(index) })),
+      emptyJsonBodyRow(),
+    ];
+  }
+
+  return [...filled, emptyJsonBodyRow()];
+}
+
+function mapJsonBodyRows(
+  rows: JsonBodyRow[],
+  id: string,
+  mapper: (row: JsonBodyRow) => JsonBodyRow | null,
+): JsonBodyRow[] {
+  const next: JsonBodyRow[] = [];
+  for (const row of rows) {
+    if (row.id === id) {
+      const mapped = mapper(row);
+      if (mapped) next.push(mapped);
+      continue;
+    }
+    if (row.children) {
+      next.push({
+        ...row,
+        children: mapJsonBodyRows(row.children, id, mapper),
+      });
+      continue;
+    }
+    next.push(row);
+  }
+  return next;
+}
+
+function coerceJsonBodyRowType(
+  row: JsonBodyRow,
+  nextType: JsonValueType,
+): JsonBodyRow {
+  if (nextType === row.type) return row;
+
+  if (isCompositeJsonType(nextType)) {
+    const currentValue = jsonBodyRowToValue(row);
+    if (nextType === "object") {
+      if (
+        currentValue &&
+        typeof currentValue === "object" &&
+        !Array.isArray(currentValue)
+      ) {
+        return {
+          ...row,
+          type: "object",
+          value: "",
+          children: objectToJsonBodyRows(currentValue),
+        };
+      }
+      if (typeof row.value === "string" && row.value.trim()) {
+        try {
+          const parsed = JSON.parse(row.value) as unknown;
+          if (
+            parsed &&
+            typeof parsed === "object" &&
+            !Array.isArray(parsed)
+          ) {
+            return {
+              ...row,
+              type: "object",
+              value: "",
+              children: objectToJsonBodyRows(parsed),
+            };
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      return {
+        ...row,
+        type: "object",
+        value: "",
+        children: [emptyJsonBodyRow()],
+      };
+    }
+
+    if (Array.isArray(currentValue)) {
+      return {
+        ...row,
+        type: "array",
+        value: "",
+        children: arrayToJsonBodyRows(currentValue),
+      };
+    }
+    if (typeof row.value === "string" && row.value.trim()) {
+      try {
+        const parsed = JSON.parse(row.value) as unknown;
+        if (Array.isArray(parsed)) {
+          return {
+            ...row,
+            type: "array",
+            value: "",
+            children: arrayToJsonBodyRows(parsed),
+          };
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return {
+      ...row,
+      type: "array",
+      value: "",
+      children: [emptyJsonBodyRow()],
+    };
+  }
+
+  let nextValue = "";
+  if (nextType === "boolean") nextValue = "true";
+  else if (nextType === "number") nextValue = "0";
+  else if (nextType === "string") {
+    if (isCompositeJsonType(row.type)) {
+      try {
+        nextValue = JSON.stringify(jsonBodyRowToValue(row));
+      } catch {
+        nextValue = "";
+      }
+    } else if (row.type !== "null") {
+      nextValue = row.value;
+    }
+  } else if (nextType === "null") {
+    nextValue = "";
+  }
+
+  return {
+    id: row.id,
+    key: row.key,
+    type: nextType,
+    value: nextValue,
+  };
+}
+
+function jsonBodiesEqual(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
+function formatJsonBody(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? {}, null, 2);
+  } catch {
+    return "{}";
+  }
+}
+
+function isJsonObjectRoot(value: unknown): boolean {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function JsonFoldChevron({
+  expanded,
+  onClick,
+}: {
+  expanded: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={expanded ? "Recolher" : "Expandir"}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className="inline-flex h-5 w-4 shrink-0 items-center justify-center text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+    >
+      <span
+        className={cn(
+          "block text-[8px] leading-none transition-transform",
+          expanded ? "rotate-0" : "-rotate-90",
+        )}
+      >
+        ▼
+      </span>
+    </button>
+  );
+}
+
+/** Conector em L estilo Threads: linha do pai até o filho. */
+function JsonThreadBranch({ isLast }: { isLast: boolean }) {
+  return (
+    <span
+      className="relative mr-0.5 inline-block h-7 w-3.5 shrink-0"
+      aria-hidden
+    >
+      <span className="absolute top-0 left-[6px] h-[15px] w-px bg-zinc-300 dark:bg-zinc-600" />
+      {!isLast ? (
+        <span className="absolute top-[15px] bottom-0 left-[6px] w-px bg-zinc-300 dark:bg-zinc-600" />
+      ) : null}
+      <span className="absolute top-[13px] left-[6px] h-[7px] w-[9px] rounded-bl-[7px] border-b border-l border-zinc-300 dark:border-zinc-600" />
+    </span>
+  );
+}
+
+/**
+ * Cópia 1:1 da geometria do JsonThreadBranch (que já funciona no body):
+ * tronco reto + peça L pequena no ramo (não um L do tamanho do bloco inteiro).
+ */
+function LogThreadBlock({
+  icon,
+  title,
+  titleAside,
+  prelude,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  titleAside?: ReactNode;
+  prelude?: ReactNode;
+  children: ReactNode;
+}) {
+  const items = Children.toArray(children).filter(Boolean);
+  const preludeItems = Children.toArray(prelude).filter(Boolean);
+  const hasPrelude = preludeItems.length > 0;
+
+  // Mesmos números do JsonThreadBranch (left 6 → 10 numa col de 20)
+  const rail = 10;
+  // centro do label h-5
+  const labelCenter = 10;
+  // peça do canto — iguais ao body (7), braço só mais longo
+  const corner = 7;
+  const overlap = 2;
+  const armWidth = 36;
+  const labelGutter = 12;
+
+  const railClass =
+    "absolute w-px bg-zinc-400 dark:bg-zinc-500";
+
+  return (
+    <div className="grid grid-cols-[20px_minmax(0,1fr)] gap-x-6">
+      <div className="relative">
+        <div className="relative z-10 flex h-5 w-5 items-center justify-center rounded-full border border-zinc-300 bg-white text-[10px] text-zinc-700 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200">
+          {icon}
+        </div>
+        <span
+          aria-hidden
+          className={cn(railClass, "top-2.5 bottom-0")}
+          style={{ left: rail }}
+        />
+      </div>
+      <div className="flex min-h-5 items-center justify-between gap-2 border-b border-zinc-200 pb-2 dark:border-zinc-700">
+        <div className="text-[13px] font-semibold tracking-wide text-zinc-900 dark:text-zinc-50">
+          {title}
+        </div>
+        {titleAside}
+      </div>
+
+      {hasPrelude ? (
+        <>
+          <div className="relative">
+            <span
+              aria-hidden
+              className={cn(railClass, "inset-y-0")}
+              style={{ left: rail }}
+            />
+          </div>
+          <div className="pt-3">{preludeItems}</div>
+        </>
+      ) : null}
+
+      {items.map((child, index) => {
+        const isLast = index === items.length - 1;
+        const isFirst = index === 0;
+        const padTop = isFirst ? 12 : 0;
+        // equivalente ao top-[15px] do JsonThreadBranch
+        const branchAt = padTop + labelCenter;
+
+        return (
+          <Fragment key={index}>
+            <div
+              className={cn("relative", isFirst && "pt-3", !isLast && "pb-3")}
+            >
+              {/* Tronco até o ramo — JsonThreadBranch: h-[15px] */}
+              <span
+                aria-hidden
+                className={railClass}
+                style={{ left: rail, top: 0, height: branchAt }}
+              />
+              {/* Continuação — JsonThreadBranch: top-[15px] bottom-0 */}
+              {!isLast ? (
+                <span
+                  aria-hidden
+                  className={railClass}
+                  style={{ left: rail, top: branchAt, bottom: 0 }}
+                />
+              ) : null}
+              {/* Peça L — JsonThreadBranch: top-[13px] h-[7px] w-[9px] rounded-bl-[7px] */}
+              <span
+                aria-hidden
+                className="pointer-events-none absolute rounded-bl-[7px] border-b border-l border-zinc-400 dark:border-zinc-500"
+                style={{
+                  left: rail,
+                  top: branchAt - overlap,
+                  width: armWidth,
+                  height: corner,
+                }}
+              />
+            </div>
+            <div
+              className={cn(isFirst && "pt-3", !isLast && "pb-3")}
+              style={{ paddingLeft: labelGutter }}
+            >
+              {child}
+            </div>
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+function JsonThreadSpine({ continues }: { continues: boolean }) {
+  return (
+    <span className="relative mr-0.5 inline-block h-7 w-3.5 shrink-0" aria-hidden>
+      {continues ? (
+        <span className="absolute inset-y-0 left-[6px] w-px bg-zinc-300 dark:bg-zinc-600" />
+      ) : null}
+    </span>
+  );
+}
+
+type FlatJsonBodyRow = {
+  row: JsonBodyRow;
+  depth: number;
+  mode: JsonBodyContainerMode;
+  isLastSibling: boolean;
+  /** Em cada nível ancestral: se o fio vertical continua (ancestral não era o último). */
+  ancestorSpine: boolean[];
+};
+
+function flattenJsonBodyRows(
+  rows: JsonBodyRow[],
+  mode: JsonBodyContainerMode,
+  collapsedIds: Set<string>,
+  depth = 0,
+  ancestorSpine: boolean[] = [],
+): FlatJsonBodyRow[] {
+  const out: FlatJsonBodyRow[] = [];
+  rows.forEach((row, index) => {
+    const isLastSibling = index === rows.length - 1;
+    out.push({ row, depth, mode, isLastSibling, ancestorSpine });
+    const nestedMode = isCompositeJsonType(row.type) ? row.type : null;
+    if (nestedMode && !collapsedIds.has(row.id)) {
+      out.push(
+        ...flattenJsonBodyRows(
+          row.children ?? [emptyJsonBodyRow()],
+          nestedMode,
+          collapsedIds,
+          depth + 1,
+          [...ancestorSpine, !isLastSibling],
+        ),
+      );
+    }
+  });
+  return out;
+}
+
+/** Colapsa só objetos/arrays filhos diretos da raiz (raiz permanece aberta). */
+function foldJsonRootChildren(view: EditorView) {
+  const tree = syntaxTree(view.state);
+  let root = tree.topNode.firstChild;
+  while (root && root.name !== "Object" && root.name !== "Array") {
+    root = root.nextSibling;
+  }
+  if (!root) return;
+
+  const ranges: { from: number; to: number }[] = [];
+  const tryFoldAt = (pos: number) => {
+    const line = view.state.doc.lineAt(pos);
+    const range = foldable(view.state, line.from, line.to);
+    if (range) ranges.push(range);
+  };
+
+  if (root.name === "Object") {
+    for (let child = root.firstChild; child; child = child.nextSibling) {
+      if (child.name !== "Property") continue;
+      let value = child.lastChild;
+      while (value && value.name === "⚠") value = value.prevSibling;
+      if (value && (value.name === "Object" || value.name === "Array")) {
+        tryFoldAt(value.from);
+      }
+    }
+  } else {
+    for (let child = root.firstChild; child; child = child.nextSibling) {
+      if (child.name === "Object" || child.name === "Array") {
+        tryFoldAt(child.from);
+      }
+    }
+  }
+
+  if (ranges.length) {
+    view.dispatch({
+      effects: ranges.map((range) => foldEffect.of(range)),
+    });
+  }
+}
+
+function applyJsonBulkFold(view: EditorView, collapsed: boolean) {
+  forceParsing(view, view.state.doc.length, 150);
+  // Garante árvore pronta antes do fold (parser pode terminar no próximo tick)
+  requestAnimationFrame(() => {
+    forceParsing(view, view.state.doc.length, 150);
+    unfoldAll(view);
+    if (collapsed) foldJsonRootChildren(view);
+  });
+}
+
+function JsonBulkCodeEditor({
+  value,
+  onChange,
+  readOnly = false,
+  defaultCollapsed = false,
+}: {
+  value: string;
+  onChange?: (next: string) => void;
+  readOnly?: boolean;
+  defaultCollapsed?: boolean;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const onChangeRef = useRef(onChange);
+  const valueRef = useRef(value);
+  const collapsedRef = useRef(defaultCollapsed);
+  onChangeRef.current = onChange;
+  valueRef.current = value;
+  collapsedRef.current = defaultCollapsed;
+
+  useEffect(() => {
+    if (!hostRef.current) return;
+
+    const prefersDark =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+    const view = new EditorView({
+      parent: hostRef.current,
+      state: EditorState.create({
+        doc: valueRef.current,
+        extensions: [
+          lineNumbers(),
+          ...(readOnly
+            ? []
+            : [highlightActiveLine(), highlightActiveLineGutter()]),
+          foldGutter({
+            openText: "▼",
+            closedText: "▶",
+          }),
+          bracketMatching(),
+          ...(readOnly
+            ? [
+                EditorState.readOnly.of(true),
+                EditorView.editable.of(false),
+                keymap.of([...foldKeymap]),
+              ]
+            : [
+                indentOnInput(),
+                codeMirrorHistory(),
+                keymap.of([
+                  ...defaultKeymap,
+                  ...historyKeymap,
+                  ...foldKeymap,
+                ]),
+                EditorView.updateListener.of((update) => {
+                  if (!update.docChanged) return;
+                  onChangeRef.current?.(update.state.doc.toString());
+                }),
+              ]),
+          json(),
+          ...(prefersDark
+            ? [oneDark]
+            : [syntaxHighlighting(defaultHighlightStyle, { fallback: true })]),
+          EditorView.theme({
+            "&": {
+              fontSize: "11px",
+              maxHeight: "18rem",
+            },
+            "&.cm-editor": {
+              outline: "none",
+            },
+            "&.cm-editor.cm-focused": {
+              outline: "none",
+            },
+            ".cm-scroller": {
+              overflow: "auto",
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+              lineHeight: "1.55",
+            },
+            ".cm-content": {
+              padding: "6px 0",
+            },
+            ".cm-gutters": {
+              border: "none",
+            },
+            ".cm-foldGutter .cm-gutterElement": {
+              padding: "0 2px",
+              fontSize: "8px",
+              lineHeight: "1.55",
+            },
+          }),
+        ],
+      }),
+    });
+    viewRef.current = view;
+    applyJsonBulkFold(view, collapsedRef.current);
+
+    return () => {
+      view.destroy();
+      viewRef.current = null;
+    };
+  }, [readOnly]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const current = view.state.doc.toString();
+    if (current === value) return;
+    view.dispatch({
+      changes: { from: 0, to: current.length, insert: value },
+    });
+    // Valor externo (não digitação local): reaplica preferência de colapso
+    applyJsonBulkFold(view, collapsedRef.current);
+  }, [value]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    applyJsonBulkFold(view, defaultCollapsed);
+  }, [defaultCollapsed]);
+
+  return (
+    <div
+      ref={hostRef}
+      className="overflow-hidden rounded border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950"
+    />
+  );
+}
+
+function JsonBodyTypeSelect({
+  value,
+  onChange,
+}: {
+  value: JsonValueType;
+  onChange: (next: JsonValueType) => void;
+}) {
+  return (
+    <select
+      className="h-7 w-full bg-transparent px-0.5 text-[10px] text-zinc-700 focus:outline-none dark:text-zinc-200"
+      value={value}
+      onChange={(e) => onChange(e.target.value as JsonValueType)}
+    >
+      <option value="string">string</option>
+      <option value="number">number</option>
+      <option value="boolean">boolean</option>
+      <option value="null">null</option>
+      <option value="object">object</option>
+      <option value="array">array</option>
+    </select>
+  );
+}
+
+function JsonBodyValueCell({
+  row,
+  collapsed,
+  onChange,
+  readOnly = false,
+}: {
+  row: JsonBodyRow;
+  collapsed?: boolean;
+  onChange: (value: string) => void;
+  readOnly?: boolean;
+}) {
+  if (row.type === "boolean") {
+    if (readOnly) {
+      return (
+        <span className="px-1 font-mono text-[11px] text-zinc-800 dark:text-zinc-100">
+          {row.value === "false" ? "false" : "true"}
+        </span>
+      );
+    }
+    return (
+      <select
+        className="h-7 w-full bg-transparent px-1 font-mono text-[11px] text-zinc-800 focus:outline-none dark:text-zinc-100"
+        value={row.value === "false" ? "false" : "true"}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    );
+  }
+  if (row.type === "null") {
+    return (
+      <span className="px-1 font-mono text-[11px] text-zinc-400">null</span>
+    );
+  }
+  if (isCompositeJsonType(row.type)) {
+    const count = (row.children ?? []).filter((c) => !isBlankJsonBodyRow(c))
+      .length;
+    if (collapsed) {
+      return (
+        <span className="px-1 font-mono text-[11px] text-zinc-400">
+          {row.type === "object" ? `{ ↔ ${count} ↔ }` : `[ ↔ ${count} ↔ ]`}
+        </span>
+      );
+    }
+    return (
+      <span className="px-1 font-mono text-[11px] text-zinc-400">
+        {row.type === "object" ? `{ ${count} }` : `[ ${count} ]`}
+      </span>
+    );
+  }
+  if (readOnly) {
+    return (
+      <span className="break-all px-1 font-mono text-[11px] text-zinc-800 dark:text-zinc-100">
+        {row.value}
+      </span>
+    );
+  }
+  return (
+    <input
+      type={row.type === "number" ? "number" : "text"}
+      placeholder="Valor"
+      className="h-7 w-full bg-transparent px-1 font-mono text-[11px] text-zinc-800 placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100"
+      value={row.value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
+function stripBlankJsonBodyRows(rows: JsonBodyRow[]): JsonBodyRow[] {
+  return rows
+    .filter((row) => !isBlankJsonBodyRow(row))
+    .map((row) =>
+      row.children
+        ? { ...row, children: stripBlankJsonBodyRows(row.children) }
+        : row,
+    );
+}
+
+/** IDs de object/array só no nível raiz (não desce nos filhos). */
+function collectCompositeJsonBodyRowIds(rows: JsonBodyRow[]): string[] {
+  return rows
+    .filter((row) => isCompositeJsonType(row.type))
+    .map((row) => row.id);
+}
+
+type DisplayBodyMode = "table" | "bulk";
+
+function JsonBodyRowsTable({
+  rows,
+  mode,
+  collapsedIds,
+  onToggleCollapsed,
+  onChange,
+  readOnly = false,
+}: {
+  rows: JsonBodyRow[];
+  mode: JsonBodyContainerMode;
+  collapsedIds: Set<string>;
+  onToggleCollapsed: (id: string) => void;
+  onChange: (next: JsonBodyRow[]) => void;
+  readOnly?: boolean;
+}) {
+  const sourceRows = readOnly ? stripBlankJsonBodyRows(rows) : rows;
+  const flatRows = flattenJsonBodyRows(sourceRows, mode, collapsedIds);
+
+  function commit(nextRows: JsonBodyRow[]) {
+    onChange(normalizeJsonBodyRows(nextRows, mode));
+  }
+
+  function updateRow(
+    id: string,
+    patch: Partial<Pick<JsonBodyRow, "key" | "type" | "value">>,
+  ) {
+    commit(
+      mapJsonBodyRows(rows, id, (row) => {
+        if (patch.type && patch.type !== row.type) {
+          return coerceJsonBodyRowType(
+            { ...row, ...patch, type: row.type },
+            patch.type,
+          );
+        }
+        return { ...row, ...patch };
+      }),
+    );
+  }
+
+  function removeRow(id: string) {
+    commit(mapJsonBodyRows(rows, id, () => null));
+  }
+
+  const colgroup = (
+    <colgroup>
+      <col className="w-[40%]" />
+      <col className="w-24" />
+      <col />
+      <col className="w-7" />
+    </colgroup>
+  );
+
+  return (
+    <div className="flex max-h-96 flex-col overflow-hidden rounded border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950">
+      <div className="shrink-0 bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-100">
+        <table className="min-w-full table-fixed border-separate border-spacing-0 text-[11px]">
+          {colgroup}
+          <thead>
+            <tr>
+              <th className={tableHeadCellClass()}>Chave</th>
+              <th className={tableHeadCellClass()}>Tipo</th>
+              <th className={tableHeadCellClass()}>Valor</th>
+              <th className={cn(tableHeadCellClass(), "px-1")} />
+            </tr>
+          </thead>
+        </table>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <table className="min-w-full table-fixed border-separate border-spacing-0 text-[11px]">
+          {colgroup}
+          <tbody>
+            {flatRows.map(
+              (
+                { row, depth, mode: rowMode, isLastSibling, ancestorSpine },
+                index,
+              ) => {
+                const isTrailingEmpty =
+                  isLastSibling && isBlankJsonBodyRow(row);
+                const nestedMode = isCompositeJsonType(row.type)
+                  ? row.type
+                  : null;
+                const collapsed = nestedMode
+                  ? collapsedIds.has(row.id)
+                  : false;
+
+                return (
+                  <tr key={row.id} className={tableRowZebraClass(index)}>
+                    <td className="border-b border-zinc-100 px-1 py-0.5 dark:border-zinc-800">
+                      <div className="flex min-w-0 items-center gap-0.5">
+                        {ancestorSpine.map((continues, spineIndex) => (
+                          <JsonThreadSpine
+                            key={spineIndex}
+                            continues={continues}
+                          />
+                        ))}
+                        {depth > 0 ? (
+                          <JsonThreadBranch isLast={isLastSibling} />
+                        ) : null}
+                        {nestedMode ? (
+                          <JsonFoldChevron
+                            expanded={!collapsed}
+                            onClick={() => onToggleCollapsed(row.id)}
+                          />
+                        ) : (
+                          <span className="inline-block w-4 shrink-0" />
+                        )}
+                        {rowMode === "array" || readOnly ? (
+                          <span className="px-1 font-mono text-[11px] text-zinc-700 dark:text-zinc-200">
+                            {isTrailingEmpty && !readOnly
+                              ? "+"
+                              : rowMode === "array"
+                                ? row.key
+                                : row.key || "—"}
+                          </span>
+                        ) : (
+                          <input
+                            type="text"
+                            placeholder="Chave"
+                            className="h-7 min-w-0 flex-1 bg-transparent px-1 font-mono text-[11px] text-zinc-800 placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100"
+                            value={row.key}
+                            onChange={(e) =>
+                              updateRow(row.id, { key: e.target.value })
+                            }
+                          />
+                        )}
+                      </div>
+                    </td>
+                    <td className="border-b border-zinc-100 px-1 py-0.5 dark:border-zinc-800">
+                      {readOnly ? (
+                        <span className="px-0.5 font-mono text-[10px] text-zinc-500">
+                          {row.type}
+                        </span>
+                      ) : (
+                        <JsonBodyTypeSelect
+                          value={row.type}
+                          onChange={(type) => updateRow(row.id, { type })}
+                        />
+                      )}
+                    </td>
+                    <td className="border-b border-zinc-100 px-1 py-0.5 dark:border-zinc-800">
+                      <JsonBodyValueCell
+                        row={row}
+                        collapsed={collapsed}
+                        readOnly={readOnly}
+                        onChange={(value) => updateRow(row.id, { value })}
+                      />
+                    </td>
+                    <td className="border-b border-zinc-100 px-1 text-center dark:border-zinc-800">
+                      {!readOnly && !isTrailingEmpty ? (
+                        <button
+                          type="button"
+                          aria-label="Remover campo"
+                          className="text-[11px] text-zinc-400 hover:text-red-500"
+                          onClick={() => removeRow(row.id)}
+                        >
+                          ✕
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              },
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function JsonBodyEditor({
+  value,
+  onChange,
+  defaultBodyMode = "table",
+  defaultJsonCollapsed = false,
+}: {
+  value: unknown;
+  onChange: (next: unknown) => void;
+  defaultBodyMode?: DisplayBodyMode;
+  defaultJsonCollapsed?: boolean;
+}) {
+  const rootIsObject = isJsonObjectRoot(value);
+  const [rows, setRows] = useState(() => objectToJsonBodyRows(value));
+  const [bulkOpen, setBulkOpen] = useState(
+    () => !rootIsObject || defaultBodyMode === "bulk",
+  );
+  const [bulkText, setBulkText] = useState(() => formatJsonBody(value));
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
+    if (!defaultJsonCollapsed || !rootIsObject) return new Set();
+    return new Set(
+      collectCompositeJsonBodyRowIds(
+        stripBlankJsonBodyRows(objectToJsonBodyRows(value)),
+      ),
+    );
+  });
+
+  useEffect(() => {
+    if (isJsonObjectRoot(value)) {
+      const fromRows = jsonBodyRowsToObject(rows);
+      if (!jsonBodiesEqual(value, fromRows)) {
+        const nextRows = objectToJsonBodyRows(value);
+        setRows(nextRows);
+        setCollapsedIds(
+          defaultJsonCollapsed
+            ? new Set(
+                collectCompositeJsonBodyRowIds(
+                  stripBlankJsonBodyRows(nextRows),
+                ),
+              )
+            : new Set(),
+        );
+      }
+      try {
+        const fromBulk = JSON.parse(bulkText || "null") as unknown;
+        if (!jsonBodiesEqual(value, fromBulk)) {
+          setBulkText(formatJsonBody(value));
+          setBulkError(null);
+        }
+      } catch {
+        // Mantém o rascunho inválido enquanto o usuário digita no bulk.
+      }
+    } else {
+      setBulkText(formatJsonBody(value));
+      setBulkOpen(true);
+      setBulkError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  useEffect(() => {
+    if (isJsonObjectRoot(value)) {
+      setBulkOpen(defaultBodyMode === "bulk");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultBodyMode]);
+
+  useEffect(() => {
+    if (!isJsonObjectRoot(value)) return;
+    setCollapsedIds(
+      defaultJsonCollapsed
+        ? new Set(
+            collectCompositeJsonBodyRowIds(stripBlankJsonBodyRows(rows)),
+          )
+        : new Set(),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultJsonCollapsed]);
+
+  function commitRows(nextRows: JsonBodyRow[]) {
+    const normalized = normalizeJsonBodyRows(nextRows, "object");
+    setRows(normalized);
+    const obj = jsonBodyRowsToObject(normalized);
+    onChange(obj);
+    setBulkText(formatJsonBody(obj));
+    setBulkError(null);
+  }
+
+  function toggleCollapsedId(id: string) {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function handleBulkTextChange(nextText: string) {
+    setBulkText(nextText);
+    try {
+      const parsed = JSON.parse(nextText || "null") as unknown;
+      onChange(parsed);
+      setBulkError(null);
+    } catch {
+      setBulkError("JSON inválido");
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-zinc-500">Body</span>
+        <button
+          type="button"
+          className="text-[10px] text-zinc-500 underline-offset-2 hover:text-zinc-700 hover:underline dark:hover:text-zinc-300"
+          onClick={() => {
+            if (bulkOpen) {
+              try {
+                const parsed = JSON.parse(bulkText || "null") as unknown;
+                if (!isJsonObjectRoot(parsed)) {
+                  setBulkError(
+                    "Use um objeto JSON ({...}) para editar em Table",
+                  );
+                  return;
+                }
+                onChange(parsed);
+                setRows(objectToJsonBodyRows(parsed));
+                setBulkOpen(false);
+                setBulkError(null);
+              } catch {
+                setBulkError("JSON inválido");
+              }
+              return;
+            }
+            setBulkText(
+              formatJsonBody(
+                isJsonObjectRoot(value)
+                  ? jsonBodyRowsToObject(rows)
+                  : value,
+              ),
+            );
+            setBulkError(null);
+            setBulkOpen(true);
+          }}
+        >
+          {bulkOpen ? "Table" : "Bulk"}
+        </button>
+      </div>
+      {bulkOpen ? (
+        <div className="flex flex-col gap-1">
+          {!isJsonObjectRoot(value) && (
+            <p className="text-[10px] text-zinc-500">
+              Array ou valor não-objeto: edite em Bulk. Table disponível para
+              objetos.
+            </p>
+          )}
+          <JsonBulkCodeEditor
+            value={bulkText}
+            onChange={handleBulkTextChange}
+            defaultCollapsed={defaultJsonCollapsed}
+          />
+          {bulkError ? (
+            <span className="text-[10px] text-red-500">{bulkError}</span>
+          ) : null}
+        </div>
+      ) : (
+        <JsonBodyRowsTable
+          rows={rows}
+          mode="object"
+          collapsedIds={collapsedIds}
+          onToggleCollapsed={toggleCollapsedId}
+          onChange={commitRows}
+        />
+      )}
+    </div>
+  );
+}
+
+function JsonBodyViewer({
+  value,
+  defaultBodyMode = "table",
+  defaultJsonCollapsed = false,
+}: {
+  value: unknown;
+  defaultBodyMode?: DisplayBodyMode;
+  defaultJsonCollapsed?: boolean;
+}) {
+  const hasBody = value != null && value !== "";
+  const rootIsObject = isJsonObjectRoot(value);
+  const [bulkOpen, setBulkOpen] = useState(
+    () =>
+      (value != null && value !== "" && !isJsonObjectRoot(value)) ||
+      defaultBodyMode === "bulk",
+  );
+  // objectToJsonBodyRows gera ids novos a cada chamada — memoiza para o
+  // colapso (collapsedIds) continuar batendo com as rows após o toggle.
+  const rows = useMemo(
+    () =>
+      rootIsObject
+        ? stripBlankJsonBodyRows(objectToJsonBodyRows(value))
+        : [],
+    [rootIsObject, value],
+  );
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() =>
+    defaultJsonCollapsed
+      ? new Set(collectCompositeJsonBodyRowIds(rows))
+      : new Set(),
+  );
+
+  useEffect(() => {
+    if (hasBody && !rootIsObject) {
+      setBulkOpen(true);
+      return;
+    }
+    if (!hasBody) {
+      setBulkOpen(false);
+      return;
+    }
+    setBulkOpen(defaultBodyMode === "bulk");
+  }, [hasBody, rootIsObject, value, defaultBodyMode]);
+
+  useEffect(() => {
+    setCollapsedIds(
+      defaultJsonCollapsed
+        ? new Set(collectCompositeJsonBodyRowIds(rows))
+        : new Set(),
+    );
+  }, [rows, defaultJsonCollapsed]);
+
+  function toggleCollapsedId(id: string) {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const showBulk = bulkOpen || (hasBody && !rootIsObject);
+  const emptyTable = (
+    <div className="flex max-h-60 flex-col overflow-hidden rounded border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950">
+      <div className="shrink-0 bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-100">
+        <table className="min-w-full table-fixed border-separate border-spacing-0 text-[11px]">
+          <colgroup>
+            <col className="w-[40%]" />
+            <col className="w-24" />
+            <col />
+            <col className="w-7" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th className={tableHeadCellClass()}>Chave</th>
+              <th className={tableHeadCellClass()}>Tipo</th>
+              <th className={tableHeadCellClass()}>Valor</th>
+              <th className={cn(tableHeadCellClass(), "px-1")} />
+            </tr>
+          </thead>
+        </table>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <table className="min-w-full table-fixed border-separate border-spacing-0 text-[11px]">
+          <colgroup>
+            <col className="w-[40%]" />
+            <col className="w-24" />
+            <col />
+            <col className="w-7" />
+          </colgroup>
+          <tbody>
+            <tr className={tableRowZebraClass(0)}>
+              <td
+                colSpan={4}
+                className="border-b border-zinc-100 px-2 py-1 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+              >
+                {hasBody ? "{ }" : "(sem body)"}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex h-5 items-center justify-between gap-2">
+        <span className="text-[12px] font-semibold leading-none text-zinc-800 dark:text-zinc-100">
+          Body
+        </span>
+        {!hasBody || rootIsObject ? (
+          <button
+            type="button"
+            className="text-[10px] font-medium text-zinc-500 underline-offset-2 hover:text-zinc-800 hover:underline dark:text-zinc-400 dark:hover:text-zinc-200"
+            onClick={() => setBulkOpen((open) => !open)}
+          >
+            {bulkOpen ? "Table" : "Bulk"}
+          </button>
+        ) : null}
+      </div>
+      {showBulk ? (
+        <JsonBulkCodeEditor
+          value={hasBody ? formatJsonBody(value) : "null"}
+          readOnly
+          defaultCollapsed={defaultJsonCollapsed}
+        />
+      ) : !hasBody || rows.length === 0 ? (
+        emptyTable
+      ) : (
+        <JsonBodyRowsTable
+          rows={rows}
+          mode="object"
+          collapsedIds={collapsedIds}
+          onToggleCollapsed={toggleCollapsedId}
+          onChange={() => {}}
+          readOnly
+        />
       )}
     </div>
   );
@@ -575,6 +2562,10 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [settingsDeleteConfirm, setSettingsDeleteConfirm] = useState("");
   const [settingsDeleteError, setSettingsDeleteError] = useState<string | null>(null);
   const [settingsDeleting, setSettingsDeleting] = useState(false);
+  const [displayBodyMode, setDisplayBodyMode] =
+    useState<DisplayBodyMode>("bulk");
+  const [displayJsonCollapsed, setDisplayJsonCollapsed] = useState(true);
+  const [displaySettingsSaving, setDisplaySettingsSaving] = useState(false);
   const [apiConfigOpen, setApiConfigOpen] = useState(false);
   const [apiProxyModeType, setApiProxyModeType] = useState<ProxyModeType>("disabled");
   const [apiProxyUrl, setApiProxyUrl] = useState("");
@@ -604,6 +2595,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [configMessage, setConfigMessage] = useState<string | null>(null);
   const [dynamicRules, setDynamicRules] = useState<DynamicMockRule[]>([]);
   const [expandedDynamicRuleIds, setExpandedDynamicRuleIds] = useState<string[]>([]);
+  const [draftDynamicRuleIds, setDraftDynamicRuleIds] = useState<string[]>([]);
   const [draggingRuleId, setDraggingRuleId] = useState<string | null>(null);
   const [ruleDropIndex, setRuleDropIndex] = useState<number | null>(null);
   const dynamicRulesRef = useRef<DynamicMockRule[]>([]);
@@ -1098,6 +3090,34 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     sseRef.current?.close();
   }
 
+  function applyDisplaySettings(data: {
+    displayBodyMode?: unknown;
+    displayJsonCollapsed?: unknown;
+  }) {
+    if (data.displayBodyMode === "bulk" || data.displayBodyMode === "table") {
+      setDisplayBodyMode(data.displayBodyMode);
+    }
+    if (typeof data.displayJsonCollapsed === "boolean") {
+      setDisplayJsonCollapsed(data.displayJsonCollapsed);
+    }
+  }
+
+  async function loadDisplaySettings() {
+    try {
+      const res = await fetch("/api/server/settings");
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        hasPassword?: boolean;
+        displayBodyMode?: DisplayBodyMode;
+        displayJsonCollapsed?: boolean;
+      };
+      setSettingsHasPassword(Boolean(data.hasPassword));
+      applyDisplaySettings(data);
+    } catch {
+      // ignore
+    }
+  }
+
   async function openSettings() {
     setSettingsOpen(true);
     setSettingsCurrentPassword("");
@@ -1106,14 +3126,46 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     setSettingsPasswordMessage(null);
     setSettingsDeleteConfirm("");
     setSettingsDeleteError(null);
+    await loadDisplaySettings();
+  }
+
+  async function saveDisplaySettings(patch: {
+    displayBodyMode?: DisplayBodyMode;
+    displayJsonCollapsed?: boolean;
+  }) {
+    if (
+      (patch.displayBodyMode === undefined ||
+        patch.displayBodyMode === displayBodyMode) &&
+      (patch.displayJsonCollapsed === undefined ||
+        patch.displayJsonCollapsed === displayJsonCollapsed)
+    ) {
+      return;
+    }
+    const prevMode = displayBodyMode;
+    const prevCollapsed = displayJsonCollapsed;
+    applyDisplaySettings(patch);
+    setDisplaySettingsSaving(true);
     try {
-      const res = await fetch("/api/server/settings");
-      if (res.ok) {
-        const data = (await res.json()) as { hasPassword?: boolean };
-        setSettingsHasPassword(Boolean(data.hasPassword));
+      const res = await fetch("/api/server/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        setDisplayBodyMode(prevMode);
+        setDisplayJsonCollapsed(prevCollapsed);
+        return;
       }
+      const data = (await res.json().catch(() => null)) as {
+        displayBodyMode?: DisplayBodyMode;
+        displayJsonCollapsed?: boolean;
+      } | null;
+      if (data) applyDisplaySettings(data);
     } catch {
-      // ignore
+      setDisplayBodyMode(prevMode);
+      setDisplayJsonCollapsed(prevCollapsed);
+    } finally {
+      setDisplaySettingsSaving(false);
     }
   }
 
@@ -1290,6 +3342,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     setConfigProxyServiceName("");
     setDynamicRules([]);
     setExpandedDynamicRuleIds([]);
+    setDraftDynamicRuleIds([]);
 
     try {
       const res = await fetch(`/api/routes/configs?apiName=${encodeURIComponent(selectedApi)}`);
@@ -1324,10 +3377,12 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           const rules = match.dynamicRules ?? [];
           setDynamicRules(rules);
           setExpandedDynamicRuleIds(rules[0] ? [rules[0].id] : []);
+          setDraftDynamicRuleIds([]);
         } else {
           setConfigProxyModeType(apiHasProxy ? null : "disabled");
           setDynamicRules([]);
           setExpandedDynamicRuleIds([]);
+          setDraftDynamicRuleIds([]);
         }
       }
     } catch (err) {
@@ -1910,6 +3965,12 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    void loadDisplaySettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authenticated]);
 
   // Load data whenever authenticated or selectedApi changes
   useEffect(() => {
@@ -2735,154 +4796,135 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
 
                     {expandedIds.includes(log.id) && (
                       <div className="border-t border-zinc-100 bg-zinc-50 px-3 py-3 text-[11px] text-zinc-700 dark:border-zinc-900 dark:bg-zinc-900 dark:text-zinc-200">
-                        <div className="mb-3 flex gap-3">
-                          <div className="flex w-6 shrink-0 flex-col items-center pt-0.5">
-                            <div className="flex h-5 w-5 items-center justify-center rounded-full border border-zinc-300 bg-white text-[10px] text-zinc-700 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200">
-                              <span className="block leading-none">→</span>
-                            </div>
-                            <div className="mt-1 w-px flex-1 bg-zinc-300 dark:bg-zinc-700" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="mb-2 flex min-h-5 items-center justify-between">
-                              <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                                Dados da request
-                              </div>
-                            </div>
-                            <div className="grid gap-3 md:grid-cols-2">
-                              <div>
-                                <div className="mb-1 text-[11px] font-medium text-zinc-500">
-                                  Query Params
-                                </div>
-                                {renderKeyValueTable(log.queryParams ?? {})}
-                              </div>
-                              <div>
-                                <div className="mb-1 text-[11px] font-medium text-zinc-500">
-                                  Headers
-                                </div>
-                                <HeadersTable data={log.headers ?? {}} />
-                              </div>
-                            </div>
-                            <div className="mt-3">
-                              <div className="mb-1 text-[11px] font-medium text-zinc-500">
-                                Body
-                              </div>
-                              <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
-                                {log.body != null && log.body !== ""
-                                  ? JSON.stringify(log.body, null, 2)
-                                  : "(sem body)"}
-                              </pre>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="mt-3 border-t border-dashed border-zinc-200 pt-3 text-[11px] dark:border-zinc-700">
-                          <div className="mb-3 flex gap-3">
-                            <div className="flex w-6 shrink-0 flex-col items-center pt-0.5">
-                              <div className="flex h-5 w-5 items-center justify-center rounded-full border border-zinc-300 bg-white text-[10px] text-zinc-700 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200">
-                                <span className="block leading-none">←</span>
-                              </div>
-                              <div className="mt-1 w-px flex-1 bg-zinc-300 dark:bg-zinc-700" />
-                            </div>
-                            <div className="flex-1">
-                              <div className="mb-2 flex min-h-5 items-center justify-between gap-2">
-                                <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                                  Dados da resposta
-                                </div>
-                                <span
-                                  className={cn(
-                                    "inline-flex min-w-12 items-center justify-center rounded-full px-2.5 py-1 font-mono text-[12px] font-semibold",
-                                    statusPillClass(log.responseStatus),
-                                  )}
-                                >
-                                  {log.responseStatus}
-                                </span>
-                              </div>
-                              {log.proxyTargetUrl && (
-                                <div className="mb-2 rounded border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200">
-                                  <div>
-                                    <span className="font-semibold">Proxy URL habilitado</span>
-                                    <span>, respondido por:</span>
+                        <LogThreadBlock
+                          icon={<span className="block leading-none">→</span>}
+                          title="Dados da request"
+                        >
+                          <KeyValueViewer
+                            label="Query Params"
+                            data={log.queryParams ?? {}}
+                            defaultBodyMode={displayBodyMode}
+                            defaultJsonCollapsed={displayJsonCollapsed}
+                          />
+                          <KeyValueViewer
+                            label="Headers"
+                            data={log.headers ?? {}}
+                            defaultBodyMode={displayBodyMode}
+                            defaultJsonCollapsed={displayJsonCollapsed}
+                          />
+                          <JsonBodyViewer
+                            value={log.body}
+                            defaultBodyMode={displayBodyMode}
+                            defaultJsonCollapsed={displayJsonCollapsed}
+                          />
+                        </LogThreadBlock>
+                        <div className="mt-4 border-t border-dashed border-zinc-200 pt-4 dark:border-zinc-700">
+                          <LogThreadBlock
+                            icon={<span className="block leading-none">←</span>}
+                            title="Dados da resposta"
+                            titleAside={
+                              <span
+                                className={cn(
+                                  "inline-flex min-w-12 items-center justify-center rounded-full px-2.5 py-1 font-mono text-[12px] font-semibold",
+                                  statusPillClass(log.responseStatus),
+                                )}
+                              >
+                                {log.responseStatus}
+                              </span>
+                            }
+                            prelude={
+                              <>
+                                {log.proxyTargetUrl ? (
+                                  <div className="mb-2 rounded border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200">
+                                    <div>
+                                      <span className="font-semibold">
+                                        Proxy URL habilitado
+                                      </span>
+                                      <span>, respondido por:</span>
+                                    </div>
+                                    <div className="mt-2 break-all font-mono text-[11px] font-semibold">
+                                      {log.proxyResolvedUrl ?? log.proxyTargetUrl}
+                                    </div>
                                   </div>
-                                  <div className="mt-2 break-all font-mono text-[11px] font-semibold">
-                                    {log.proxyResolvedUrl ?? log.proxyTargetUrl}
-                                  </div>
-                                </div>
-                              )}
-                              {log.proxyClientId && (() => {
-                                const clientOffline =
-                                  Boolean(log.proxyClientOffline) ||
-                                  (log.responseStatus === 502 &&
-                                    typeof log.responseBody === "object" &&
-                                    log.responseBody != null &&
-                                    "error" in log.responseBody &&
-                                    String(
-                                      (log.responseBody as { error?: unknown }).error,
-                                    ).includes("cliente conectado"));
-                                return (
-                                <div
-                                  className={cn(
-                                    "mb-2 rounded border px-2 py-1.5 text-[11px]",
-                                    clientOffline
-                                      ? "border-zinc-300 bg-zinc-100 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400"
-                                      : "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200",
-                                  )}
-                                >
-                                  <div>
-                                    <span className="font-semibold">
-                                      Proxy Client habilitado
-                                    </span>
-                                    <span>
-                                      {clientOffline
-                                        ? ", cliente offline/indisponível:"
-                                        : ", respondido pelo cliente:"}
-                                    </span>
-                                  </div>
-                                  <div className="mt-2 flex items-center gap-2">
-                                    <span
-                                      className={cn(
-                                        "rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold",
-                                        clientOffline
-                                          ? "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
-                                          : "bg-blue-200 text-blue-800 dark:bg-blue-800 dark:text-blue-200",
-                                      )}
-                                    >
-                                      {log.proxyClientName || log.proxyClientId}
-                                    </span>
-                                    <span
-                                      className={cn(
-                                        clientOffline
-                                          ? "text-zinc-500"
-                                          : "text-blue-600 dark:text-blue-400",
-                                      )}
-                                    >
-                                      →
-                                    </span>
-                                    <span className="font-mono text-[11px]">
-                                      {log.proxyServiceName}
-                                    </span>
-                                  </div>
-                                </div>
-                                );
-                              })()}
-                              <div className="grid gap-3 md:grid-cols-2">
-                                <div>
-                                  <div className="mb-1 text-[11px] text-zinc-500">
-                                    Body (response)
-                                  </div>
-                                  <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
-                                    {log.responseBody != null && log.responseBody !== ""
-                                      ? JSON.stringify(log.responseBody, null, 2)
-                                      : "(sem body)"}
-                                  </pre>
-                                </div>
-                                <div>
-                                  <div className="mb-1 text-[11px] text-zinc-500">
-                                    Headers (response)
-                                  </div>
-                                  <HeadersTable data={log.responseHeaders ?? {}} />
-                                </div>
-                              </div>
-                            </div>
-                          </div>
+                                ) : null}
+                                {log.proxyClientId
+                                  ? (() => {
+                                      const clientOffline =
+                                        Boolean(log.proxyClientOffline) ||
+                                        (log.responseStatus === 502 &&
+                                          typeof log.responseBody === "object" &&
+                                          log.responseBody != null &&
+                                          "error" in log.responseBody &&
+                                          String(
+                                            (
+                                              log.responseBody as {
+                                                error?: unknown;
+                                              }
+                                            ).error,
+                                          ).includes("cliente conectado"));
+                                      return (
+                                        <div
+                                          className={cn(
+                                            "mb-2 rounded border px-2 py-1.5 text-[11px]",
+                                            clientOffline
+                                              ? "border-zinc-300 bg-zinc-100 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400"
+                                              : "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200",
+                                          )}
+                                        >
+                                          <div>
+                                            <span className="font-semibold">
+                                              Proxy Client habilitado
+                                            </span>
+                                            <span>
+                                              {clientOffline
+                                                ? ", cliente offline/indisponível:"
+                                                : ", respondido pelo cliente:"}
+                                            </span>
+                                          </div>
+                                          <div className="mt-2 flex items-center gap-2">
+                                            <span
+                                              className={cn(
+                                                "rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold",
+                                                clientOffline
+                                                  ? "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                                                  : "bg-blue-200 text-blue-800 dark:bg-blue-800 dark:text-blue-200",
+                                              )}
+                                            >
+                                              {log.proxyClientName ||
+                                                log.proxyClientId}
+                                            </span>
+                                            <span
+                                              className={cn(
+                                                clientOffline
+                                                  ? "text-zinc-500"
+                                                  : "text-blue-600 dark:text-blue-400",
+                                              )}
+                                            >
+                                              →
+                                            </span>
+                                            <span className="font-mono text-[11px]">
+                                              {log.proxyServiceName}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()
+                                  : null}
+                              </>
+                            }
+                          >
+                            <KeyValueViewer
+                              label="Headers"
+                              data={log.responseHeaders ?? {}}
+                              defaultBodyMode={displayBodyMode}
+                              defaultJsonCollapsed={displayJsonCollapsed}
+                            />
+                            <JsonBodyViewer
+                              value={log.responseBody}
+                              defaultBodyMode={displayBodyMode}
+                              defaultJsonCollapsed={displayJsonCollapsed}
+                            />
+                          </LogThreadBlock>
                         </div>
                       </div>
                     )}
@@ -3590,22 +5632,21 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                               <button
                                 type="button"
                                 onClick={() => {
-                                  const pathParams = listPathParamNames(route.path);
                                   const id = newDynamicRuleId();
                                   const rule: DynamicMockRule = {
                                     id,
                                     condition: {
-                                      source: pathParams.length ? "path" : "query",
-                                      key: pathParams[0] ?? "",
+                                      source: "query",
+                                      key: "",
                                       operator: "equals",
                                       value: "",
-                                      bodyKind: "json",
                                     },
                                     status: 200,
                                     body: { status: "ok" },
                                     headers: {},
                                   };
                                   setDynamicRules((prev) => [rule, ...prev]);
+                                  setDraftDynamicRuleIds((prev) => [...prev, id]);
                                   setExpandedDynamicRuleIds((prev) => [...prev, id]);
                                 }}
                                 className="flex w-full items-center justify-center rounded-md border border-dashed border-zinc-300 px-3 py-2 text-[11px] text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
@@ -3615,28 +5656,6 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                               {dynamicRules.map((rule, ruleIndex) => {
                                 const expanded = expandedDynamicRuleIds.includes(rule.id);
                                 const pathParams = listPathParamNames(route.path);
-                                const conditionPath = (() => {
-                                  const parts: string[] = [rule.condition.source];
-                                  if (rule.condition.source === "body") {
-                                    parts.push(rule.condition.bodyKind ?? "json");
-                                    if (
-                                      (rule.condition.bodyKind ?? "json") === "json" &&
-                                      rule.condition.key
-                                    ) {
-                                      parts.push(rule.condition.key);
-                                    }
-                                  } else if (rule.condition.key) {
-                                    parts.push(rule.condition.key);
-                                  }
-                                  return parts.join(".");
-                                })();
-                                const summary = `${conditionPath} · ${rule.condition.operator}${
-                                  rule.condition.operator !== "exists" &&
-                                  rule.condition.operator !== "notExists" &&
-                                  rule.condition.value
-                                    ? ` · ${rule.condition.value}`
-                                    : ""
-                                }`;
                                 const draggedRuleIndex = draggingRuleId
                                   ? dynamicRules.findIndex((r) => r.id === draggingRuleId)
                                   : -1;
@@ -3684,9 +5703,38 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                             <circle cx="7" cy="13" r="1.2" />
                                           </svg>
                                         </button>
+                                        <ConditionPillInput
+                                          value={rule.condition}
+                                          pathParams={pathParams}
+                                          draft={draftDynamicRuleIds.includes(rule.id)}
+                                          onDraftConsumed={() =>
+                                            setDraftDynamicRuleIds((prev) =>
+                                              prev.filter((id) => id !== rule.id),
+                                            )
+                                          }
+                                          onChange={(next) =>
+                                            setDynamicRules((prev) =>
+                                              prev.map((r) =>
+                                                r.id === rule.id
+                                                  ? { ...r, condition: next }
+                                                  : r,
+                                              ),
+                                            )
+                                          }
+                                        />
                                         <button
                                           type="button"
-                                          className="inline-flex min-w-0 flex-1 items-center gap-2 text-left text-[11px] text-zinc-700 dark:text-zinc-200"
+                                          title={
+                                            expanded
+                                              ? "Ocultar resposta"
+                                              : "Mostrar resposta"
+                                          }
+                                          aria-label={
+                                            expanded
+                                              ? "Ocultar resposta"
+                                              : "Mostrar resposta"
+                                          }
+                                          className="inline-flex h-6 w-5 shrink-0 items-center justify-center text-[11px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
                                           onClick={() =>
                                             setExpandedDynamicRuleIds((prev) =>
                                               prev.includes(rule.id)
@@ -3695,266 +5743,25 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                             )
                                           }
                                         >
-                                          <span className="shrink-0">
-                                            {expanded ? "▼" : "▶"}
-                                          </span>
-                                          <span className="min-w-0 truncate">
-                                            {summary}
-                                          </span>
+                                          {expanded ? "▼" : "▶"}
                                         </button>
                                         <button
                                           type="button"
                                           className="text-[10px] text-red-500"
-                                          onClick={() =>
+                                          onClick={() => {
                                             setDynamicRules((prev) =>
                                               prev.filter((r) => r.id !== rule.id),
-                                            )
-                                          }
+                                            );
+                                            setDraftDynamicRuleIds((prev) =>
+                                              prev.filter((id) => id !== rule.id),
+                                            );
+                                          }}
                                         >
                                           ✕
                                         </button>
                                       </div>
                                     {expanded && (
                                       <div className="space-y-2 border-t border-zinc-100 px-2 py-2 dark:border-zinc-900">
-                                        <div className="grid gap-2 sm:grid-cols-3 sm:items-start">
-                                          <div className="flex flex-col gap-2">
-                                            <label className="flex flex-col gap-1">
-                                              <span className="text-[10px] text-zinc-500">
-                                                Fonte
-                                              </span>
-                                              <select
-                                                className="h-7 rounded border border-zinc-300 bg-white px-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                                                value={rule.condition.source}
-                                                onChange={(e) => {
-                                                  const source = e.target
-                                                    .value as MockMatchSource;
-                                                  setDynamicRules((prev) =>
-                                                    prev.map((r) =>
-                                                      r.id === rule.id
-                                                        ? {
-                                                            ...r,
-                                                            condition: {
-                                                              ...r.condition,
-                                                              source,
-                                                              key:
-                                                                source === "path"
-                                                                  ? pathParams[0] ?? ""
-                                                                  : r.condition.key,
-                                                              bodyKind:
-                                                                source === "body"
-                                                                  ? r.condition.bodyKind ??
-                                                                    "json"
-                                                                  : undefined,
-                                                            },
-                                                          }
-                                                        : r,
-                                                    ),
-                                                  );
-                                                }}
-                                              >
-                                                <option value="header">header</option>
-                                                <option value="query">query</option>
-                                                <option value="path">path</option>
-                                                <option value="body">body</option>
-                                              </select>
-                                            </label>
-
-                                            {(rule.condition.source === "header" ||
-                                              rule.condition.source === "query") && (
-                                              <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] text-zinc-500">
-                                                  Chave
-                                                </span>
-                                                <input
-                                                  className="h-7 rounded border border-zinc-300 bg-white px-1.5 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                                                  value={rule.condition.key ?? ""}
-                                                  onChange={(e) =>
-                                                    setDynamicRules((prev) =>
-                                                      prev.map((r) =>
-                                                        r.id === rule.id
-                                                          ? {
-                                                              ...r,
-                                                              condition: {
-                                                                ...r.condition,
-                                                                key: e.target.value,
-                                                              },
-                                                            }
-                                                          : r,
-                                                      ),
-                                                    )
-                                                  }
-                                                />
-                                              </label>
-                                            )}
-
-                                            {rule.condition.source === "path" && (
-                                              <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] text-zinc-500">
-                                                  Path param
-                                                </span>
-                                                {pathParams.length === 0 ? (
-                                                  <span className="text-[11px] text-amber-600">
-                                                    Este path não tem parâmetros (:id).
-                                                    Converta um segmento antes.
-                                                  </span>
-                                                ) : (
-                                                  <select
-                                                    className="h-7 rounded border border-zinc-300 bg-white px-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                                                    value={rule.condition.key ?? ""}
-                                                    onChange={(e) =>
-                                                      setDynamicRules((prev) =>
-                                                        prev.map((r) =>
-                                                          r.id === rule.id
-                                                            ? {
-                                                                ...r,
-                                                                condition: {
-                                                                  ...r.condition,
-                                                                  key: e.target.value,
-                                                                },
-                                                              }
-                                                            : r,
-                                                        ),
-                                                      )
-                                                    }
-                                                  >
-                                                    {pathParams.map((name) => (
-                                                      <option key={name} value={name}>
-                                                        :{name}
-                                                      </option>
-                                                    ))}
-                                                  </select>
-                                                )}
-                                              </label>
-                                            )}
-
-                                            {rule.condition.source === "body" && (
-                                              <>
-                                                <label className="flex flex-col gap-1">
-                                                  <span className="text-[10px] text-zinc-500">
-                                                    Tipo do body
-                                                  </span>
-                                                  <select
-                                                    className="h-7 rounded border border-zinc-300 bg-white px-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                                                    value={
-                                                      rule.condition.bodyKind ?? "json"
-                                                    }
-                                                    onChange={(e) =>
-                                                      setDynamicRules((prev) =>
-                                                        prev.map((r) =>
-                                                          r.id === rule.id
-                                                            ? {
-                                                                ...r,
-                                                                condition: {
-                                                                  ...r.condition,
-                                                                  bodyKind: e.target
-                                                                    .value as MockBodyKind,
-                                                                },
-                                                              }
-                                                            : r,
-                                                        ),
-                                                      )
-                                                    }
-                                                  >
-                                                    <option value="json">json</option>
-                                                    <option value="raw">raw</option>
-                                                  </select>
-                                                </label>
-                                                {(rule.condition.bodyKind ?? "json") ===
-                                                  "json" && (
-                                                  <label className="flex flex-col gap-1">
-                                                    <span className="text-[10px] text-zinc-500">
-                                                      Campo (dot-path)
-                                                    </span>
-                                                    <input
-                                                      placeholder="user.id"
-                                                      className="h-7 rounded border border-zinc-300 bg-white px-1.5 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                                                      value={rule.condition.key ?? ""}
-                                                      onChange={(e) =>
-                                                        setDynamicRules((prev) =>
-                                                          prev.map((r) =>
-                                                            r.id === rule.id
-                                                              ? {
-                                                                  ...r,
-                                                                  condition: {
-                                                                    ...r.condition,
-                                                                    key: e.target.value,
-                                                                  },
-                                                                }
-                                                              : r,
-                                                          ),
-                                                        )
-                                                      }
-                                                    />
-                                                  </label>
-                                                )}
-                                              </>
-                                            )}
-                                          </div>
-
-                                          <label className="flex flex-col gap-1">
-                                            <span className="text-[10px] text-zinc-500">
-                                              Operador
-                                            </span>
-                                            <select
-                                              className="h-7 rounded border border-zinc-300 bg-white px-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                                              value={rule.condition.operator}
-                                              onChange={(e) => {
-                                                const operator = e.target
-                                                  .value as MockOperator;
-                                                setDynamicRules((prev) =>
-                                                  prev.map((r) =>
-                                                    r.id === rule.id
-                                                      ? {
-                                                          ...r,
-                                                          condition: {
-                                                            ...r.condition,
-                                                            operator,
-                                                          },
-                                                        }
-                                                      : r,
-                                                  ),
-                                                );
-                                              }}
-                                            >
-                                              <option value="equals">equals</option>
-                                              <option value="notEquals">notEquals</option>
-                                              <option value="contains">contains</option>
-                                              <option value="notContains">notContains</option>
-                                              <option value="startsWith">startsWith</option>
-                                              <option value="endsWith">endsWith</option>
-                                              <option value="exists">exists</option>
-                                              <option value="notExists">notExists</option>
-                                            </select>
-                                          </label>
-                                          {rule.condition.operator !== "exists" &&
-                                            rule.condition.operator !== "notExists" && (
-                                              <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] text-zinc-500">
-                                                  Valor
-                                                </span>
-                                                <input
-                                                  className="h-7 rounded border border-zinc-300 bg-white px-1.5 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                                                  value={rule.condition.value ?? ""}
-                                                  onChange={(e) =>
-                                                    setDynamicRules((prev) =>
-                                                      prev.map((r) =>
-                                                        r.id === rule.id
-                                                          ? {
-                                                              ...r,
-                                                              condition: {
-                                                                ...r.condition,
-                                                                value: e.target.value,
-                                                              },
-                                                            }
-                                                          : r,
-                                                      ),
-                                                    )
-                                                  }
-                                                />
-                                              </label>
-                                            )}
-                                        </div>
-
                                         <div className="rounded border border-dashed border-zinc-200 p-2 dark:border-zinc-800">
                                           <span className="mb-1 block text-[10px] font-medium text-zinc-500">
                                             Resposta se a condição for verdadeira
@@ -3985,37 +5792,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                               />
                                             </label>
                                           </div>
-                                          <div className="grid gap-2 md:grid-cols-2">
-                                            <label className="flex flex-col gap-1">
-                                              <span className="text-[10px] text-zinc-500">
-                                                Body (JSON)
-                                              </span>
-                                              <textarea
-                                                rows={4}
-                                                className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                                                value={JSON.stringify(
-                                                  rule.body ?? {},
-                                                  null,
-                                                  2,
-                                                )}
-                                                onChange={(e) => {
-                                                  try {
-                                                    const parsed = JSON.parse(
-                                                      e.target.value || "null",
-                                                    );
-                                                    setDynamicRules((prev) =>
-                                                      prev.map((r) =>
-                                                        r.id === rule.id
-                                                          ? { ...r, body: parsed }
-                                                          : r,
-                                                      ),
-                                                    );
-                                                  } catch {
-                                                    // keep typing invalid json until blur/save
-                                                  }
-                                                }}
-                                              />
-                                            </label>
+                                          <div className="flex flex-col gap-2">
                                             <HeadersEditor
                                               value={toFlatStringRecord(
                                                 rule.headers ?? {},
@@ -4028,6 +5805,26 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                                       : r,
                                                   ),
                                                 )
+                                              }
+                                              defaultBodyMode={displayBodyMode}
+                                              defaultJsonCollapsed={
+                                                displayJsonCollapsed
+                                              }
+                                            />
+                                            <JsonBodyEditor
+                                              value={rule.body ?? {}}
+                                              onChange={(next) =>
+                                                setDynamicRules((prev) =>
+                                                  prev.map((r) =>
+                                                    r.id === rule.id
+                                                      ? { ...r, body: next }
+                                                      : r,
+                                                  ),
+                                                )
+                                              }
+                                              defaultBodyMode={displayBodyMode}
+                                              defaultJsonCollapsed={
+                                                displayJsonCollapsed
                                               }
                                             />
                                           </div>
@@ -4072,18 +5869,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                     />
                                   </label>
                                 </div>
-                                <div className="grid gap-2 md:grid-cols-2">
-                                  <label className="flex flex-col gap-1">
-                                    <span className="text-[11px] text-zinc-500">
-                                      Body (JSON)
-                                    </span>
-                                    <textarea
-                                      rows={4}
-                                      className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                      value={configBody}
-                                      onChange={(e) => setConfigBody(e.target.value)}
-                                    />
-                                  </label>
+                                <div className="flex flex-col gap-2">
                                   <HeadersEditor
                                     value={toFlatStringRecord(
                                       safeParseJson(configHeaders || "{}"),
@@ -4093,6 +5879,18 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                         JSON.stringify(next, null, 2),
                                       )
                                     }
+                                    defaultBodyMode={displayBodyMode}
+                                    defaultJsonCollapsed={displayJsonCollapsed}
+                                  />
+                                  <JsonBodyEditor
+                                    value={safeParseJson(configBody || "{}")}
+                                    onChange={(next) =>
+                                      setConfigBody(
+                                        JSON.stringify(next ?? {}, null, 2),
+                                      )
+                                    }
+                                    defaultBodyMode={displayBodyMode}
+                                    defaultJsonCollapsed={displayJsonCollapsed}
                                   />
                                 </div>
                               </div>
@@ -4283,7 +6081,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       {/* Server settings modal */}
       {settingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
-          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
+          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
@@ -4306,144 +6104,260 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
               </button>
             </div>
 
-            <section className="mt-5">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Senha do servidor
-              </h3>
-              <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-                {settingsHasPassword
-                  ? "Este servidor está protegido por senha. Você pode alterá-la ou removê-la."
-                  : "Este servidor não tem senha. Defina uma para proteger o acesso."}
-              </p>
+            <div className="mt-5 flex flex-col gap-4">
+              <section className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                <h3 className="text-xs font-semibold text-zinc-900 dark:text-zinc-50">
+                  Segurança
+                </h3>
+                <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  {settingsHasPassword
+                    ? "Altere ou remova a senha de acesso deste servidor."
+                    : "Defina uma senha para proteger o acesso a este servidor."}
+                </p>
 
-              <div className="mt-3 grid gap-2">
-                {settingsHasPassword && (
+                <div className="mt-3 grid gap-2">
+                  {settingsHasPassword && (
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+                        Senha atual
+                      </span>
+                      <input
+                        type="password"
+                        autoComplete="current-password"
+                        value={settingsCurrentPassword}
+                        onChange={(e) =>
+                          setSettingsCurrentPassword(e.target.value)
+                        }
+                        className="h-8 rounded border border-zinc-300 bg-white px-2 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                      />
+                    </label>
+                  )}
                   <label className="flex flex-col gap-1">
                     <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
-                      Senha atual
+                      {settingsHasPassword ? "Nova senha" : "Senha"}
                     </span>
                     <input
                       type="password"
-                      autoComplete="current-password"
-                      value={settingsCurrentPassword}
-                      onChange={(e) => setSettingsCurrentPassword(e.target.value)}
+                      autoComplete="new-password"
+                      value={settingsNewPassword}
+                      onChange={(e) => setSettingsNewPassword(e.target.value)}
                       className="h-8 rounded border border-zinc-300 bg-white px-2 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                     />
                   </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+                      Confirmar senha
+                    </span>
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={settingsConfirmPassword}
+                      onChange={(e) =>
+                        setSettingsConfirmPassword(e.target.value)
+                      }
+                      className="h-8 rounded border border-zinc-300 bg-white px-2 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    />
+                  </label>
+                </div>
+
+                {settingsPasswordMessage && (
+                  <p
+                    className={cn(
+                      "mt-2 text-[11px]",
+                      settingsPasswordMessage.includes("Falha") ||
+                        settingsPasswordMessage.includes("inválida") ||
+                        settingsPasswordMessage.includes("não confere")
+                        ? "text-red-600 dark:text-red-400"
+                        : "text-emerald-600 dark:text-emerald-400",
+                    )}
+                  >
+                    {settingsPasswordMessage}
+                  </p>
                 )}
-                <label className="flex flex-col gap-1">
-                  <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
-                    {settingsHasPassword ? "Nova senha" : "Senha"}
-                  </span>
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    value={settingsNewPassword}
-                    onChange={(e) => setSettingsNewPassword(e.target.value)}
-                    className="h-8 rounded border border-zinc-300 bg-white px-2 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                  />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
-                    Confirmar senha
-                  </span>
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    value={settingsConfirmPassword}
-                    onChange={(e) => setSettingsConfirmPassword(e.target.value)}
-                    className="h-8 rounded border border-zinc-300 bg-white px-2 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                  />
-                </label>
-              </div>
 
-              {settingsPasswordMessage && (
-                <p
-                  className={cn(
-                    "mt-2 text-[11px]",
-                    settingsPasswordMessage.includes("Falha") ||
-                      settingsPasswordMessage.includes("inválida") ||
-                      settingsPasswordMessage.includes("não confere")
-                      ? "text-red-600 dark:text-red-400"
-                      : "text-emerald-600 dark:text-emerald-400",
-                  )}
-                >
-                  {settingsPasswordMessage}
-                </p>
-              )}
-
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  disabled={
-                    settingsPasswordSaving ||
-                    !settingsNewPassword.trim() ||
-                    (settingsHasPassword && !settingsCurrentPassword)
-                  }
-                  onClick={() => void saveServerPassword(false)}
-                  className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-                >
-                  {settingsPasswordSaving
-                    ? "Salvando..."
-                    : settingsHasPassword
-                      ? "Alterar senha"
-                      : "Definir senha"}
-                </button>
-                {settingsHasPassword && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     disabled={
-                      settingsPasswordSaving || !settingsCurrentPassword
+                      settingsPasswordSaving ||
+                      !settingsNewPassword.trim() ||
+                      (settingsHasPassword && !settingsCurrentPassword)
                     }
-                    onClick={() => void saveServerPassword(true)}
-                    className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                    onClick={() => void saveServerPassword(false)}
+                    className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
                   >
-                    Remover senha
+                    {settingsPasswordSaving
+                      ? "Salvando..."
+                      : settingsHasPassword
+                        ? "Alterar senha"
+                        : "Definir senha"}
                   </button>
-                )}
-              </div>
-            </section>
+                  {settingsHasPassword && (
+                    <button
+                      type="button"
+                      disabled={
+                        settingsPasswordSaving || !settingsCurrentPassword
+                      }
+                      onClick={() => void saveServerPassword(true)}
+                      className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                    >
+                      Remover senha
+                    </button>
+                  )}
+                </div>
+              </section>
 
-            <section className="mt-6 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/60 dark:bg-red-950/30">
-              <h3 className="text-xs font-semibold text-red-700 dark:text-red-300">
-                Zona de perigo
-              </h3>
-              <p className="mt-1 text-xs text-red-700/90 dark:text-red-300/90">
-                Deletar o servidor remove permanentemente todas as APIs, rotas,
-                requisições e configurações de clients associados. Esta ação não
-                pode ser desfeita.
-              </p>
-              <label className="mt-3 flex flex-col gap-1">
-                <span className="text-[11px] font-medium text-red-700 dark:text-red-300">
-                  Digite <code className="font-mono">{currentServerName}</code>{" "}
-                  para confirmar
-                </span>
-                <input
-                  type="text"
-                  value={settingsDeleteConfirm}
-                  onChange={(e) => setSettingsDeleteConfirm(e.target.value)}
-                  className="h-8 rounded border border-red-300 bg-white px-2 font-mono text-xs text-zinc-800 dark:border-red-900 dark:bg-zinc-950 dark:text-zinc-100"
-                  placeholder={currentServerName}
-                />
-              </label>
-              {settingsDeleteError && (
-                <p className="mt-2 text-[11px] text-red-600 dark:text-red-400">
-                  {settingsDeleteError}
+              <section className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                <h3 className="text-xs font-semibold text-zinc-900 dark:text-zinc-50">
+                  Exibição
+                </h3>
+                <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  Padrões para logs e editores de rota neste servidor.
                 </p>
-              )}
-              <button
-                type="button"
-                disabled={
-                  settingsDeleting ||
-                  settingsDeleteConfirm.trim().toLowerCase() !==
-                    currentServerName.trim().toLowerCase()
-                }
-                onClick={() => void confirmDeleteServer()}
-                className="mt-3 rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-60 dark:bg-red-700 dark:hover:bg-red-600"
-              >
-                {settingsDeleting ? "Deletando..." : "Deletar servidor"}
-              </button>
-            </section>
+
+                <div className="mt-3 flex flex-col gap-4">
+                  <div>
+                    <p className="text-[11px] font-medium text-zinc-700 dark:text-zinc-300">
+                      Formato padrão
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                      Como Body e Headers abrem por padrão.
+                    </p>
+                    <div
+                      role="group"
+                      aria-label="Formato padrão"
+                      className="mt-2 grid grid-cols-2 gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-0.5 dark:border-zinc-700 dark:bg-zinc-900"
+                    >
+                      <button
+                        type="button"
+                        disabled={displaySettingsSaving}
+                        aria-pressed={displayBodyMode === "table"}
+                        onClick={() =>
+                          void saveDisplaySettings({ displayBodyMode: "table" })
+                        }
+                        className={cn(
+                          "rounded px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-60",
+                          displayBodyMode === "table"
+                            ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-zinc-50"
+                            : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+                        )}
+                      >
+                        Table
+                      </button>
+                      <button
+                        type="button"
+                        disabled={displaySettingsSaving}
+                        aria-pressed={displayBodyMode === "bulk"}
+                        onClick={() =>
+                          void saveDisplaySettings({ displayBodyMode: "bulk" })
+                        }
+                        className={cn(
+                          "rounded px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-60",
+                          displayBodyMode === "bulk"
+                            ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-zinc-50"
+                            : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+                        )}
+                      >
+                        Bulk
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[11px] font-medium text-zinc-700 dark:text-zinc-300">
+                      JSON aninhado
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                      Objetos e arrays da raiz começam abertos ou colapsados.
+                    </p>
+                    <div
+                      role="group"
+                      aria-label="JSON aninhado"
+                      className="mt-2 grid grid-cols-2 gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-0.5 dark:border-zinc-700 dark:bg-zinc-900"
+                    >
+                      <button
+                        type="button"
+                        disabled={displaySettingsSaving}
+                        aria-pressed={!displayJsonCollapsed}
+                        onClick={() =>
+                          void saveDisplaySettings({
+                            displayJsonCollapsed: false,
+                          })
+                        }
+                        className={cn(
+                          "rounded px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-60",
+                          !displayJsonCollapsed
+                            ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-zinc-50"
+                            : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+                        )}
+                      >
+                        Aberto
+                      </button>
+                      <button
+                        type="button"
+                        disabled={displaySettingsSaving}
+                        aria-pressed={displayJsonCollapsed}
+                        onClick={() =>
+                          void saveDisplaySettings({
+                            displayJsonCollapsed: true,
+                          })
+                        }
+                        className={cn(
+                          "rounded px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-60",
+                          displayJsonCollapsed
+                            ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-zinc-50"
+                            : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+                        )}
+                      >
+                        Colapsado
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/60 dark:bg-red-950/30">
+                <h3 className="text-xs font-semibold text-red-700 dark:text-red-300">
+                  Zona de perigo
+                </h3>
+                <p className="mt-1 text-[11px] text-red-700/90 dark:text-red-300/90">
+                  Deletar o servidor remove permanentemente todas as APIs, rotas,
+                  requisições e configurações de clients associados. Esta ação
+                  não pode ser desfeita.
+                </p>
+                <label className="mt-3 flex flex-col gap-1">
+                  <span className="text-[11px] font-medium text-red-700 dark:text-red-300">
+                    Digite{" "}
+                    <code className="font-mono">{currentServerName}</code> para
+                    confirmar
+                  </span>
+                  <input
+                    type="text"
+                    value={settingsDeleteConfirm}
+                    onChange={(e) => setSettingsDeleteConfirm(e.target.value)}
+                    className="h-8 rounded border border-red-300 bg-white px-2 font-mono text-xs text-zinc-800 dark:border-red-900 dark:bg-zinc-950 dark:text-zinc-100"
+                    placeholder={currentServerName}
+                  />
+                </label>
+                {settingsDeleteError && (
+                  <p className="mt-2 text-[11px] text-red-600 dark:text-red-400">
+                    {settingsDeleteError}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  disabled={
+                    settingsDeleting ||
+                    settingsDeleteConfirm.trim().toLowerCase() !==
+                      currentServerName.trim().toLowerCase()
+                  }
+                  onClick={() => void confirmDeleteServer()}
+                  className="mt-3 rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-60 dark:bg-red-700 dark:hover:bg-red-600"
+                >
+                  {settingsDeleting ? "Deletando..." : "Deletar servidor"}
+                </button>
+              </section>
+            </div>
           </div>
         </div>
       )}

@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import {
   deleteServerAndAllData,
+  getServerDisplaySettings,
   serverRequiresPassword,
+  setServerDisplaySettings,
   setServerPassword,
+  type DisplayBodyMode,
 } from "@/lib/server/server-config";
 import {
   getServerFromCookie,
@@ -25,8 +28,15 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
   }
 
-  const hasPassword = await serverRequiresPassword(serverName);
-  return NextResponse.json({ serverName, hasPassword });
+  const [hasPassword, display] = await Promise.all([
+    serverRequiresPassword(serverName),
+    getServerDisplaySettings(serverName),
+  ]);
+  return NextResponse.json({
+    serverName,
+    hasPassword,
+    ...display,
+  });
 }
 
 export async function PATCH(request: Request) {
@@ -36,6 +46,49 @@ export async function PATCH(request: Request) {
   }
 
   const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object") {
+    return NextResponse.json({ error: "Body inválido." }, { status: 400 });
+  }
+
+  const hasDisplayPatch =
+    body.displayBodyMode !== undefined ||
+    body.displayJsonCollapsed !== undefined;
+  const hasPasswordPatch =
+    typeof body.password === "string" ||
+    typeof body.currentPassword === "string";
+
+  if (hasDisplayPatch && !hasPasswordPatch) {
+    const patch: {
+      displayBodyMode?: DisplayBodyMode;
+      displayJsonCollapsed?: boolean;
+    } = {};
+    if (body.displayBodyMode === "table" || body.displayBodyMode === "bulk") {
+      patch.displayBodyMode = body.displayBodyMode;
+    } else if (body.displayBodyMode !== undefined) {
+      return NextResponse.json(
+        { error: "displayBodyMode inválido." },
+        { status: 400 },
+      );
+    }
+    if (typeof body.displayJsonCollapsed === "boolean") {
+      patch.displayJsonCollapsed = body.displayJsonCollapsed;
+    } else if (body.displayJsonCollapsed !== undefined) {
+      return NextResponse.json(
+        { error: "displayJsonCollapsed inválido." },
+        { status: 400 },
+      );
+    }
+
+    const result = await setServerDisplaySettings(serverName, patch);
+    if (!result.ok) {
+      return NextResponse.json(
+        { error: result.message ?? "Falha ao atualizar configurações." },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json({ ok: true, ...result.settings });
+  }
+
   const password = typeof body?.password === "string" ? body.password : "";
   const currentPassword =
     typeof body?.currentPassword === "string" ? body.currentPassword : undefined;
