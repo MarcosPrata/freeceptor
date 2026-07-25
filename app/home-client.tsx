@@ -217,6 +217,20 @@ function responseModeBadgeClass(
   );
 }
 
+function tableRowZebraClass(index: number): string {
+  return index % 2 === 0
+    ? "bg-white dark:bg-zinc-950"
+    : "bg-zinc-50 dark:bg-zinc-900/70";
+}
+
+function tableHeadClass(): string {
+  return "sticky top-0 bg-zinc-200/90 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-100";
+}
+
+function tableHeadCellClass(): string {
+  return "border-b border-zinc-300 px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide dark:border-zinc-600";
+}
+
 function renderKeyValueTable(data: Record<string, string | string[]>) {
   const entries = Object.entries(data);
   if (!entries.length) {
@@ -230,29 +244,233 @@ function renderKeyValueTable(data: Record<string, string | string[]>) {
   return (
     <div className="max-h-60 overflow-auto rounded border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950">
       <table className="min-w-full border-separate border-spacing-0 text-[11px]">
-        <thead className="sticky top-0 bg-zinc-100 text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
+        <thead className={tableHeadClass()}>
           <tr>
-            <th className="border-b border-zinc-200 px-2 py-1 text-left font-medium dark:border-zinc-700">
-              Chave
-            </th>
-            <th className="border-b border-zinc-200 px-2 py-1 text-left font-medium dark:border-zinc-700">
-              Valor
-            </th>
+            <th className={tableHeadCellClass()}>Chave</th>
+            <th className={tableHeadCellClass()}>Valor</th>
           </tr>
         </thead>
         <tbody>
-          {entries.map(([key, value]) => (
-            <tr key={key}>
+          {entries.map(([key, value], index) => (
+            <tr key={key} className={tableRowZebraClass(index)}>
               <td className="border-b border-zinc-100 px-2 py-1 font-mono text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
                 {key}
               </td>
-              <td className="border-b border-zinc-100 px-2 py-1 font-mono text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
+              <td className="break-all border-b border-zinc-100 px-2 py-1 font-mono text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
                 {Array.isArray(value) ? value.join(", ") : value}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+type HeaderRow = { id: string; name: string; value: string };
+
+function newHeaderRowId() {
+  return `h-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function toFlatStringRecord(value: unknown): Record<string, string> {
+  const raw = toStringRecord(value);
+  const out: Record<string, string> = {};
+  for (const [key, item] of Object.entries(raw)) {
+    out[key] = Array.isArray(item) ? item.join(", ") : item;
+  }
+  return out;
+}
+
+function recordToHeaderRows(headers: Record<string, string>): HeaderRow[] {
+  const rows = Object.entries(headers).map(([name, value]) => ({
+    id: newHeaderRowId(),
+    name,
+    value: String(value ?? ""),
+  }));
+  return [...rows, { id: newHeaderRowId(), name: "", value: "" }];
+}
+
+function headerRowsToRecord(rows: HeaderRow[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (!name) continue;
+    out[name] = row.value;
+  }
+  return out;
+}
+
+function headersRecordEqual(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => a[key] === b[key]);
+}
+
+function normalizeHeaderRows(rows: HeaderRow[]): HeaderRow[] {
+  const filled = rows.filter((row) => row.name.trim() || row.value.trim());
+  return [...filled, { id: newHeaderRowId(), name: "", value: "" }];
+}
+
+function HeadersTable({
+  data,
+}: {
+  data: Record<string, string | string[]>;
+}) {
+  return renderKeyValueTable(data);
+}
+
+function HeadersEditor({
+  value,
+  onChange,
+}: {
+  value: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  const [rows, setRows] = useState(() => recordToHeaderRows(value));
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState(() =>
+    JSON.stringify(value, null, 2),
+  );
+
+  useEffect(() => {
+    const fromRows = headerRowsToRecord(rows);
+    if (!headersRecordEqual(value, fromRows)) {
+      setRows(recordToHeaderRows(value));
+      setBulkText(JSON.stringify(value, null, 2));
+    }
+    // Only re-sync when the external value changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  function commitRows(nextRows: HeaderRow[]) {
+    const normalized = normalizeHeaderRows(nextRows);
+    setRows(normalized);
+    const record = headerRowsToRecord(normalized);
+    onChange(record);
+    setBulkText(JSON.stringify(record, null, 2));
+  }
+
+  function updateRow(id: string, patch: Partial<Pick<HeaderRow, "name" | "value">>) {
+    commitRows(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  }
+
+  function removeRow(id: string) {
+    commitRows(rows.filter((row) => row.id !== id));
+  }
+
+  function applyBulk() {
+    try {
+      const parsed = JSON.parse(bulkText || "{}") as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return;
+      }
+      const record = toFlatStringRecord(parsed);
+      setRows(recordToHeaderRows(record));
+      onChange(record);
+      setBulkOpen(false);
+    } catch {
+      // keep bulk editor open while JSON is invalid
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-zinc-500">Headers</span>
+        <button
+          type="button"
+          className="text-[10px] text-zinc-500 underline-offset-2 hover:text-zinc-700 hover:underline dark:hover:text-zinc-300"
+          onClick={() => {
+            if (!bulkOpen) {
+              setBulkText(JSON.stringify(headerRowsToRecord(rows), null, 2));
+            }
+            setBulkOpen((open) => !open);
+          }}
+        >
+          {bulkOpen ? "Table" : "Bulk Edit"}
+        </button>
+      </div>
+      {bulkOpen ? (
+        <div className="flex flex-col gap-1">
+          <textarea
+            rows={5}
+            className="w-full border border-zinc-200 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={applyBulk}
+            className="self-end text-[10px] text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            Apply
+          </button>
+        </div>
+      ) : (
+        <div className="max-h-60 overflow-auto rounded border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950">
+          <table className="min-w-full border-separate border-spacing-0 text-[11px]">
+            <thead className={tableHeadClass()}>
+              <tr>
+                <th className={tableHeadCellClass()}>Chave</th>
+                <th className={tableHeadCellClass()}>Valor</th>
+                <th className={cn(tableHeadCellClass(), "w-7 px-1")} />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => {
+                const isTrailingEmpty =
+                  index === rows.length - 1 && !row.name && !row.value;
+                return (
+                  <tr
+                    key={row.id}
+                    className={tableRowZebraClass(index)}
+                  >
+                    <td className="border-b border-zinc-100 px-1 py-0.5 dark:border-zinc-800">
+                      <input
+                        type="text"
+                        placeholder="Chave"
+                        className="h-7 w-full bg-transparent px-1 font-mono text-[11px] text-zinc-800 placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100"
+                        value={row.name}
+                        onChange={(e) =>
+                          updateRow(row.id, { name: e.target.value })
+                        }
+                      />
+                    </td>
+                    <td className="border-b border-zinc-100 px-1 py-0.5 dark:border-zinc-800">
+                      <input
+                        type="text"
+                        placeholder="Valor"
+                        className="h-7 w-full bg-transparent px-1 font-mono text-[11px] text-zinc-800 placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100"
+                        value={row.value}
+                        onChange={(e) =>
+                          updateRow(row.id, { value: e.target.value })
+                        }
+                      />
+                    </td>
+                    <td className="border-b border-zinc-100 px-1 text-center dark:border-zinc-800">
+                      {!isTrailingEmpty ? (
+                        <button
+                          type="button"
+                          aria-label="Remover header"
+                          className="text-[11px] text-zinc-400 hover:text-red-500"
+                          onClick={() => removeRow(row.id)}
+                        >
+                          ✕
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -2541,7 +2759,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                 <div className="mb-1 text-[11px] font-medium text-zinc-500">
                                   Headers
                                 </div>
-                                {renderKeyValueTable(log.headers ?? {})}
+                                <HeadersTable data={log.headers ?? {}} />
                               </div>
                             </div>
                             <div className="mt-3">
@@ -2660,12 +2878,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                   <div className="mb-1 text-[11px] text-zinc-500">
                                     Headers (response)
                                   </div>
-                                  <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100">
-                                    {log.responseHeaders &&
-                                    Object.keys(log.responseHeaders).length
-                                      ? JSON.stringify(log.responseHeaders, null, 2)
-                                      : "(sem headers)"}
-                                  </pre>
+                                  <HeadersTable data={log.responseHeaders ?? {}} />
                                 </div>
                               </div>
                             </div>
@@ -3803,36 +4016,20 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                                 }}
                                               />
                                             </label>
-                                            <label className="flex flex-col gap-1">
-                                              <span className="text-[10px] text-zinc-500">
-                                                Cabeçalhos (JSON)
-                                              </span>
-                                              <textarea
-                                                rows={4}
-                                                className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                                                value={JSON.stringify(
-                                                  rule.headers ?? {},
-                                                  null,
-                                                  2,
-                                                )}
-                                                onChange={(e) => {
-                                                  try {
-                                                    const parsed = JSON.parse(
-                                                      e.target.value || "{}",
-                                                    ) as Record<string, string>;
-                                                    setDynamicRules((prev) =>
-                                                      prev.map((r) =>
-                                                        r.id === rule.id
-                                                          ? { ...r, headers: parsed }
-                                                          : r,
-                                                      ),
-                                                    );
-                                                  } catch {
-                                                    // ignore while typing
-                                                  }
-                                                }}
-                                              />
-                                            </label>
+                                            <HeadersEditor
+                                              value={toFlatStringRecord(
+                                                rule.headers ?? {},
+                                              )}
+                                              onChange={(next) =>
+                                                setDynamicRules((prev) =>
+                                                  prev.map((r) =>
+                                                    r.id === rule.id
+                                                      ? { ...r, headers: next }
+                                                      : r,
+                                                  ),
+                                                )
+                                              }
+                                            />
                                           </div>
                                         </div>
                                       </div>
@@ -3887,29 +4084,16 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                       onChange={(e) => setConfigBody(e.target.value)}
                                     />
                                   </label>
-                                  <div className="flex flex-col gap-1">
-                                    <label className="flex flex-col gap-1">
-                                      <span className="text-[11px] text-zinc-500">
-                                        Cabeçalhos (JSON)
-                                      </span>
-                                      <textarea
-                                        rows={4}
-                                        className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                        value={configHeaders}
-                                        onChange={(e) => setConfigHeaders(e.target.value)}
-                                      />
-                                    </label>
-                                    <div>
-                                      <span className="mb-1 block text-[11px] text-zinc-500">
-                                        Cabeçalhos (tabela)
-                                      </span>
-                                      {renderKeyValueTable(
-                                        toStringRecord(
-                                          safeParseJson(configHeaders || "{}"),
-                                        ),
-                                      )}
-                                    </div>
-                                  </div>
+                                  <HeadersEditor
+                                    value={toFlatStringRecord(
+                                      safeParseJson(configHeaders || "{}"),
+                                    )}
+                                    onChange={(next) =>
+                                      setConfigHeaders(
+                                        JSON.stringify(next, null, 2),
+                                      )
+                                    }
+                                  />
                                 </div>
                               </div>
                             </div>
