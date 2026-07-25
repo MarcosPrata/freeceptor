@@ -233,15 +233,17 @@ export default function ClientsPage() {
     // Mesma porta no host e no container (UI_PORT).
     // FREECEPTOR_URL / host do gateway: o client infere sozinho no Docker.
     const uiPort = 8002;
-    const parts = [
-      "docker run --name freeceptor-client",
+    const containerName = "freeceptor-client";
+    const runParts = [
+      `docker run --name ${containerName}`,
       `-p ${uiPort}:${uiPort}`,
       `-e UI_PORT=${uiPort}`,
       serverName ? `-e SERVER_NAME=${serverName}` : "",
       FREECEPTOR_CLIENT_IMAGE,
     ].filter(Boolean);
 
-    return parts.join(" ");
+    // Idempotente: remove container anterior (parado ou em execução) e sobe de novo.
+    return `docker rm -f ${containerName} 2>/dev/null; ${runParts.join(" ")}`;
   }
 
   function copyDockerRun() {
