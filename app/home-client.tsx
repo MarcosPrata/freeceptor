@@ -1980,11 +1980,13 @@ function JsonBodyValueCell({
   collapsed,
   onChange,
   readOnly = false,
+  autoFocus = false,
 }: {
   row: JsonBodyRow;
   collapsed?: boolean;
   onChange: (value: string) => void;
   readOnly?: boolean;
+  autoFocus?: boolean;
 }) {
   if (row.type === "boolean") {
     if (readOnly) {
@@ -1996,6 +1998,7 @@ function JsonBodyValueCell({
     }
     return (
       <select
+        autoFocus={autoFocus}
         className="h-7 w-full bg-transparent px-1 font-mono text-[11px] text-zinc-800 focus:outline-none dark:text-zinc-100"
         value={row.value === "false" ? "false" : "true"}
         onChange={(e) => onChange(e.target.value)}
@@ -2037,6 +2040,7 @@ function JsonBodyValueCell({
     <input
       type={row.type === "number" ? "number" : "text"}
       placeholder="Valor"
+      autoFocus={autoFocus}
       className="h-7 w-full bg-transparent px-1 font-mono text-[11px] text-zinc-800 placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100"
       value={row.value}
       onChange={(e) => onChange(e.target.value)}
@@ -2080,6 +2084,7 @@ function JsonBodyRowsTable({
 }) {
   const sourceRows = readOnly ? stripBlankJsonBodyRows(rows) : rows;
   const flatRows = flattenJsonBodyRows(sourceRows, mode, collapsedIds);
+  const [draftingBlankId, setDraftingBlankId] = useState<string | null>(null);
 
   function commit(nextRows: JsonBodyRow[]) {
     onChange(normalizeJsonBodyRows(nextRows, mode));
@@ -2104,6 +2109,10 @@ function JsonBodyRowsTable({
 
   function removeRow(id: string) {
     commit(mapJsonBodyRows(rows, id, () => null));
+  }
+
+  function startDraftingBlank(id: string) {
+    setDraftingBlankId(id);
   }
 
   const colgroup = (
@@ -2141,12 +2150,47 @@ function JsonBodyRowsTable({
               ) => {
                 const isTrailingEmpty =
                   isLastSibling && isBlankJsonBodyRow(row);
+                const isDraftingBlank =
+                  isTrailingEmpty && draftingBlankId === row.id;
+                const showAddAction =
+                  isTrailingEmpty && !readOnly && !isDraftingBlank;
                 const nestedMode = isCompositeJsonType(row.type)
                   ? row.type
                   : null;
                 const collapsed = nestedMode
                   ? collapsedIds.has(row.id)
                   : false;
+
+                if (showAddAction) {
+                  return (
+                    <tr key={row.id} className={tableRowZebraClass(index)}>
+                      <td
+                        colSpan={4}
+                        className="border-b border-zinc-100 px-1 py-0.5 dark:border-zinc-800"
+                      >
+                        <div className="flex min-w-0 items-center gap-0.5">
+                          {ancestorSpine.map((continues, spineIndex) => (
+                            <JsonThreadSpine
+                              key={spineIndex}
+                              continues={continues}
+                            />
+                          ))}
+                          {depth > 0 ? (
+                            <JsonThreadBranch isLast={isLastSibling} />
+                          ) : null}
+                          <span className="inline-block w-4 shrink-0" />
+                          <button
+                            type="button"
+                            className="h-7 px-1 text-left text-[11px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                            onClick={() => startDraftingBlank(row.id)}
+                          >
+                            + Adicionar
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                }
 
                 return (
                   <tr key={row.id} className={tableRowZebraClass(index)}>
@@ -2171,16 +2215,13 @@ function JsonBodyRowsTable({
                         )}
                         {rowMode === "array" || readOnly ? (
                           <span className="px-1 font-mono text-[11px] text-zinc-700 dark:text-zinc-200">
-                            {isTrailingEmpty && !readOnly
-                              ? "+"
-                              : rowMode === "array"
-                                ? row.key
-                                : row.key || "—"}
+                            {rowMode === "array" ? row.key : row.key || "—"}
                           </span>
                         ) : (
                           <input
                             type="text"
                             placeholder="Chave"
+                            autoFocus={isDraftingBlank}
                             className="h-7 min-w-0 flex-1 bg-transparent px-1 font-mono text-[11px] text-zinc-800 placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100"
                             value={row.key}
                             onChange={(e) =>
@@ -2207,6 +2248,7 @@ function JsonBodyRowsTable({
                         row={row}
                         collapsed={collapsed}
                         readOnly={readOnly}
+                        autoFocus={isDraftingBlank && rowMode === "array"}
                         onChange={(value) => updateRow(row.id, { value })}
                       />
                     </td>
