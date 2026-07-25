@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import {
   addRequestLog,
+  getRouteConfigFor,
   resolveProxyConfig,
   setRouteConfig,
   migrateExistingRecords,
 } from "@/lib/server/request-log";
+import {
+  buildDynamicMockContext,
+  resolveDynamicMock,
+} from "@/lib/server/dynamic-mock";
 import { ensureServerConfigExists } from "@/lib/server/server-config";
 import { getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { clientManager } from "@/lib/server/websocket";
@@ -148,6 +153,44 @@ async function readRequest(request: Request, context: RouteContext) {
   let proxyClientId: string | undefined;
   let proxyClientName: string | undefined;
   let proxyServiceName: string | undefined;
+  let proxyClientOffline = false;
+
+  const hasActiveProxy =
+    (resolved.proxyToClient &&
+      resolved.proxyClientId &&
+      resolved.proxyServiceName) ||
+    (resolved.proxyMode && resolved.proxyUrl);
+
+  if (!hasActiveProxy) {
+    const routeConfig = await getRouteConfigFor(
+      serverName,
+      apiNameFromPath,
+      method,
+      pathFromSlug,
+    );
+    if (routeConfig?.explicitlyConfigured) {
+      const rawBodyText =
+        typeof body === "string"
+          ? body
+          : body == null
+            ? ""
+            : undefined;
+      const dynamic = resolveDynamicMock(
+        routeConfig,
+        buildDynamicMockContext({
+          headers,
+          queryParams,
+          body,
+          rawBodyText,
+          requestPath: pathFromSlug,
+          patternPath: routeConfig.path,
+        }),
+      );
+      responseStatus = dynamic.status;
+      responseHeaders = dynamic.headers;
+      responseBody = dynamic.body;
+    }
+  }
 
   if (resolved.proxyToClient && resolved.proxyClientId && resolved.proxyServiceName) {
     try {
@@ -177,6 +220,7 @@ async function readRequest(request: Request, context: RouteContext) {
       };
       proxyClientId = resolved.proxyClientId;
       proxyServiceName = resolved.proxyServiceName;
+      proxyClientOffline = true;
     }
   } else if (resolved.proxyMode && resolved.proxyUrl) {
     try {
@@ -235,6 +279,9 @@ async function readRequest(request: Request, context: RouteContext) {
     proxyClientId,
     proxyClientName,
     proxyServiceName,
+    configSource: resolved.source,
+    overrodeApiProxy: resolved.overrodeApiProxy,
+    proxyClientOffline,
     body,
     headers,
     responseStatus,

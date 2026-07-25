@@ -13,6 +13,12 @@ export type ApiRequestLog = {
   proxyClientId?: string;
   proxyClientName?: string;
   proxyServiceName?: string;
+  /** Origem da config usada na resposta: override da rota, proxy da API, ou padrão. */
+  configSource?: "route" | "api" | "none";
+  /** True quando a rota sobrescreveu um proxy ativo da API. */
+  overrodeApiProxy?: boolean;
+  /** True quando tentou proxy client mas o cliente estava offline/ausente. */
+  proxyClientOffline?: boolean;
   body: unknown;
   headers: Record<string, string>;
   responseStatus: number;
@@ -28,9 +34,42 @@ export type ApiRouteStat = {
   count: number;
   firstTimestamp: string;
   lastTimestamp: string;
+  /** Presente quando a rota tem override explícito do comportamento padrão. */
+  overrideMode?: "mock" | "url" | "client";
+  /** Cliente do proxy da rota, quando overrideMode é client. */
+  proxyClientId?: string;
 };
 
 export type ProxyMode = "disabled" | "url" | "client";
+
+export type MockMatchSource = "header" | "query" | "path" | "body";
+export type MockBodyKind = "json" | "raw";
+export type MockOperator =
+  | "equals"
+  | "notEquals"
+  | "contains"
+  | "notContains"
+  | "startsWith"
+  | "endsWith"
+  | "exists"
+  | "notExists";
+
+export type DynamicMockCondition = {
+  source: MockMatchSource;
+  /** header name, query key, path param name, ou dot-path JSON */
+  key?: string;
+  bodyKind?: MockBodyKind;
+  operator: MockOperator;
+  value?: string;
+};
+
+export type DynamicMockRule = {
+  id: string;
+  condition: DynamicMockCondition;
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+};
 
 export type ApiRouteConfig = {
   apiName: string;
@@ -48,6 +87,9 @@ export type ApiRouteConfig = {
   // false/undefined for auto-created configs (first call to a route).
   // Explicit configs override the API-level proxy even when proxyMode is false (mock).
   explicitlyConfigured?: boolean;
+  /** @deprecated Kept for older persisted configs; mock always uses dynamicRules + fallback. */
+  mockMode?: "static" | "dynamic";
+  dynamicRules?: DynamicMockRule[];
 };
 
 export type ApiConfig = {
@@ -71,6 +113,8 @@ export type ResolvedProxyConfig = {
   routeBody: unknown;
   routeHeaders: Record<string, string>;
   source: "route" | "api" | "none";
+  /** True quando a config da rota sobrescreveu um proxy ativo da API. */
+  overrodeApiProxy: boolean;
 };
 
 type LogDoc = {
@@ -144,26 +188,57 @@ function configKey(method: string, path: string): string {
 }
 
 /**
- * Returns true if requestPath matches patternPath, where `*` in the pattern
- * matches any single path segment. Both paths must have the same segment count.
- * Examples:
- *   pathMatchesPattern("/posts/1", "/posts/*") → true
- *   pathMatchesPattern("/posts/1/comments", "/posts/*") → false (different depth)
- *   pathMatchesPattern("/posts/1", "/posts/1") → true (exact)
+ * Returns true if the segment is a path param (`:id`) or legacy `*`.
+ */
+export function isPathParamSegment(seg: string): boolean {
+  return seg === "*" || (seg.startsWith(":") && seg.length > 1);
+}
+
+export function pathHasParams(path: string): boolean {
+  return path.split("/").filter(Boolean).some(isPathParamSegment);
+}
+
+/**
+ * Returns true if requestPath matches patternPath.
+ * Pattern segments may be literals, `:name`, or legacy `*` (one segment).
  */
 export function pathMatchesPattern(requestPath: string, patternPath: string): boolean {
   const req = requestPath.split("/").filter(Boolean);
   const pat = patternPath.split("/").filter(Boolean);
   if (req.length !== pat.length) return false;
-  return req.every((seg, i) => pat[i] === "*" || pat[i] === seg);
+  return req.every((seg, i) => isPathParamSegment(pat[i]) || pat[i] === seg);
 }
 
 /**
- * Specificity score: higher = fewer wildcards = more specific.
- * Used to pick the best-matching wildcard pattern when multiple match.
+ * Extracts named path params from a request path against a pattern.
+ * Legacy `*` segments are captured as `param0`, `param1`, …
+ */
+export function extractPathParams(
+  requestPath: string,
+  patternPath: string,
+): Record<string, string> {
+  const req = requestPath.split("/").filter(Boolean);
+  const pat = patternPath.split("/").filter(Boolean);
+  const out: Record<string, string> = {};
+  if (req.length !== pat.length) return out;
+
+  let anon = 0;
+  for (let i = 0; i < pat.length; i++) {
+    const p = pat[i];
+    if (p === "*") {
+      out[`param${anon++}`] = req[i];
+    } else if (p.startsWith(":") && p.length > 1) {
+      out[p.slice(1)] = req[i];
+    }
+  }
+  return out;
+}
+
+/**
+ * Specificity score: higher = fewer params = more specific.
  */
 function patternSpecificity(path: string): number {
-  return path.split("/").filter((s) => s !== "*" && Boolean(s)).length;
+  return path.split("/").filter((s) => s && !isPathParamSegment(s)).length;
 }
 
 function mergeStatInto(target: ApiRouteStat, source: ApiRouteStat): void {
@@ -180,6 +255,89 @@ function mergeStatInto(target: ApiRouteStat, source: ApiRouteStat): void {
   ) {
     target.lastTimestamp = source.lastTimestamp;
   }
+  if (!target.overrideMode && source.overrideMode) {
+    target.overrideMode = source.overrideMode;
+  }
+  if (!target.proxyClientId && source.proxyClientId) {
+    target.proxyClientId = source.proxyClientId;
+  }
+}
+
+function overrideModeFromConfig(
+  cfg: ApiRouteConfig,
+): ApiRouteStat["overrideMode"] {
+  if (
+    cfg.proxyToClient &&
+    cfg.proxyClientId?.trim() &&
+    cfg.proxyServiceName?.trim()
+  ) {
+    return "client";
+  }
+  if (cfg.proxyMode && cfg.proxyUrl?.trim()) {
+    return "url";
+  }
+  if (cfg.explicitlyConfigured) {
+    return "mock";
+  }
+  return undefined;
+}
+
+function proxyClientIdFromConfig(cfg: ApiRouteConfig): string | undefined {
+  if (
+    cfg.proxyToClient &&
+    cfg.proxyClientId?.trim() &&
+    cfg.proxyServiceName?.trim()
+  ) {
+    return cfg.proxyClientId.trim();
+  }
+  return undefined;
+}
+
+function routeStatFromConfig(cfg: ApiRouteConfig, apiName: string): ApiRouteStat {
+  return {
+    id: configKey(cfg.method, cfg.path),
+    method: cfg.method.toUpperCase(),
+    path: normalizePath(cfg.path),
+    apiName,
+    count: 0,
+    firstTimestamp: "",
+    lastTimestamp: "",
+    overrideMode: overrideModeFromConfig(cfg),
+    proxyClientId: proxyClientIdFromConfig(cfg),
+  };
+}
+
+function mapDynamicRules(rules: unknown): DynamicMockRule[] | undefined {
+  if (!Array.isArray(rules)) return undefined;
+  const mapped = rules
+    .map((raw): DynamicMockRule | null => {
+      if (!raw || typeof raw !== "object") return null;
+      const rule = raw as Partial<DynamicMockRule>;
+      const condition = rule.condition;
+      if (!condition || typeof condition !== "object") return null;
+      const id =
+        typeof rule.id === "string" && rule.id.trim()
+          ? rule.id.trim()
+          : `rule-${Math.random().toString(36).slice(2, 10)}`;
+      return {
+        id,
+        condition: {
+          source: condition.source ?? "query",
+          key: condition.key?.trim() || undefined,
+          bodyKind: condition.bodyKind === "raw" ? "raw" : "json",
+          operator: condition.operator ?? "equals",
+          value: condition.value,
+        },
+        status: typeof rule.status === "number" ? rule.status : 200,
+        body: rule.body ?? { status: "ok" },
+        headers:
+          rule.headers && typeof rule.headers === "object"
+            ? (rule.headers as Record<string, string>)
+            : {},
+      };
+    })
+    .filter((r): r is DynamicMockRule => r != null);
+  return mapped.length > 0 ? mapped : undefined;
 }
 
 function mapConfig(config: ApiRouteConfig | RouteConfigDoc): ApiRouteConfig {
@@ -196,6 +354,8 @@ function mapConfig(config: ApiRouteConfig | RouteConfigDoc): ApiRouteConfig {
     proxyClientId: config.proxyClientId?.trim() ?? "",
     proxyServiceName: config.proxyServiceName?.trim() ?? "",
     explicitlyConfigured: Boolean(config.explicitlyConfigured),
+    mockMode: "dynamic",
+    dynamicRules: mapDynamicRules(config.dynamicRules),
   };
 }
 
@@ -274,6 +434,9 @@ export async function getRequestLogs(
           proxyClientId: 1,
           proxyClientName: 1,
           proxyServiceName: 1,
+          configSource: 1,
+          overrodeApiProxy: 1,
+          proxyClientOffline: 1,
           body: 1,
           headers: 1,
           responseStatus: 1,
@@ -300,6 +463,14 @@ export async function getRequestLogs(
       proxyClientId: doc.proxyClientId,
       proxyClientName: doc.proxyClientName,
       proxyServiceName: doc.proxyServiceName,
+      configSource:
+        doc.configSource === "route" ||
+        doc.configSource === "api" ||
+        doc.configSource === "none"
+          ? doc.configSource
+          : undefined,
+      overrodeApiProxy: Boolean(doc.overrodeApiProxy),
+      proxyClientOffline: Boolean(doc.proxyClientOffline),
       body: doc.body ?? null,
       headers: doc.headers ?? {},
       responseStatus: doc.responseStatus ?? 200,
@@ -375,22 +546,14 @@ export async function getRouteStatsWithConfigs(
     configByKey.set(configKey(cfg.method, cfg.path), cfg);
   }
 
-  const wildcardConfigs = configs.filter((c) => c.path.includes("*"));
+  const patternConfigs = configs.filter((c) => pathHasParams(c.path));
   const map = new Map<string, ApiRouteStat>();
 
-  // Seed entries for every configured route (including wildcards with count 0).
+  // Seed entries for every configured route (including patterns with count 0).
   for (const cfg of configs) {
     const key = configKey(cfg.method, cfg.path);
     if (!map.has(key)) {
-      map.set(key, {
-        id: key,
-        method: cfg.method.toUpperCase(),
-        path: normalizePath(cfg.path),
-        apiName: normalizedApi,
-        count: 0,
-        firstTimestamp: "",
-        lastTimestamp: "",
-      });
+      map.set(key, routeStatFromConfig(cfg, normalizedApi));
     }
   }
 
@@ -398,20 +561,25 @@ export async function getRouteStatsWithConfigs(
     const normalizedStatPath = normalizePath(stat.path);
     const statKey = configKey(stat.method, normalizedStatPath);
 
-    // Exact config exists → keep stat on its own entry (exact beats wildcard).
+    // Exact config exists → keep stat on its own entry (exact beats pattern).
     const exactConfig = configByKey.get(statKey);
     if (exactConfig && normalizePath(exactConfig.path) === normalizedStatPath) {
       const existing = map.get(statKey);
       if (existing) {
         mergeStatInto(existing, stat);
       } else {
-        map.set(statKey, { ...stat, path: normalizedStatPath });
+        map.set(statKey, {
+          ...stat,
+          path: normalizedStatPath,
+          overrideMode: overrideModeFromConfig(exactConfig),
+          proxyClientId: proxyClientIdFromConfig(exactConfig),
+        });
       }
       continue;
     }
 
-    // No exact config → merge into best matching wildcard config if any.
-    const matchingWildcards = wildcardConfigs
+    // No exact config → merge into best matching pattern config if any.
+    const matchingPatterns = patternConfigs
       .filter(
         (c) =>
           c.method.toUpperCase() === stat.method.toUpperCase() &&
@@ -419,20 +587,13 @@ export async function getRouteStatsWithConfigs(
       )
       .sort((a, b) => patternSpecificity(b.path) - patternSpecificity(a.path));
 
-    if (matchingWildcards.length > 0) {
-      const best = matchingWildcards[0];
-      const wildcardKey = configKey(best.method, best.path);
-      const existing = map.get(wildcardKey) ?? {
-        id: wildcardKey,
-        method: best.method.toUpperCase(),
-        path: normalizePath(best.path),
-        apiName: normalizedApi,
-        count: 0,
-        firstTimestamp: "",
-        lastTimestamp: "",
-      };
+    if (matchingPatterns.length > 0) {
+      const best = matchingPatterns[0];
+      const patternKey = configKey(best.method, best.path);
+      const existing =
+        map.get(patternKey) ?? routeStatFromConfig(best, normalizedApi);
       mergeStatInto(existing, stat);
-      map.set(wildcardKey, existing);
+      map.set(patternKey, existing);
       continue;
     }
 
@@ -533,6 +694,8 @@ export async function setRouteConfig(
         proxyClientId: normalized.proxyClientId,
         proxyServiceName: normalized.proxyServiceName,
         explicitlyConfigured: normalized.explicitlyConfigured ?? false,
+        mockMode: "dynamic",
+        dynamicRules: normalized.dynamicRules ?? [],
       },
     },
     { upsert: true },
@@ -561,16 +724,16 @@ export async function getRouteConfigFor(
   });
   if (exactDoc) return mapConfig(exactDoc);
 
-  // 2. Wildcard fallback: scan all configs for this method and find pattern matches
+  // 2. Pattern fallback: :param and legacy *
   const allDocs = await collection
     .find({ serverName, apiName: normalizedApi, method: method.toUpperCase() })
     .toArray();
 
-  const wildcardMatches = allDocs
-    .filter((doc) => doc.path.includes("*") && pathMatchesPattern(normalizedPath, doc.path))
-    .sort((a, b) => patternSpecificity(b.path) - patternSpecificity(a.path)); // most specific first
+  const patternMatches = allDocs
+    .filter((doc) => pathHasParams(doc.path) && pathMatchesPattern(normalizedPath, doc.path))
+    .sort((a, b) => patternSpecificity(b.path) - patternSpecificity(a.path));
 
-  return wildcardMatches.length > 0 ? mapConfig(wildcardMatches[0]) : undefined;
+  return patternMatches.length > 0 ? mapConfig(patternMatches[0]) : undefined;
 }
 
 export async function getAllRouteConfigs(
@@ -751,10 +914,18 @@ export async function resolveProxyConfig(
 ): Promise<ResolvedProxyConfig> {
   const normalizedApi = normalizeApiName(apiName);
   const routeConfig = await getRouteConfigFor(serverName, normalizedApi, method, path);
+  const apiConfig = await getApiConfig(serverName, normalizedApi);
 
   const defaultStatus = 200;
   const defaultBody: unknown = { status: "ok" };
   const defaultHeaders: Record<string, string> = {};
+  const hasApiProxy = Boolean(
+    apiConfig &&
+      ((apiConfig.proxyMode && apiConfig.proxyUrl) ||
+        (apiConfig.proxyToClient &&
+          apiConfig.proxyClientId &&
+          apiConfig.proxyServiceName)),
+  );
 
   if (routeConfig) {
     const hasRouteProxy =
@@ -773,6 +944,7 @@ export async function resolveProxyConfig(
         routeBody: routeConfig.body ?? defaultBody,
         routeHeaders: routeConfig.headers ?? defaultHeaders,
         source: "route",
+        overrodeApiProxy: hasApiProxy,
       };
     }
 
@@ -789,6 +961,7 @@ export async function resolveProxyConfig(
         routeBody: routeConfig.body ?? defaultBody,
         routeHeaders: routeConfig.headers ?? defaultHeaders,
         source: "route",
+        overrodeApiProxy: hasApiProxy,
       };
     }
 
@@ -797,25 +970,19 @@ export async function resolveProxyConfig(
   }
 
   // Check API-level proxy config (applies when route has no explicit proxy)
-  const apiConfig = await getApiConfig(serverName, normalizedApi);
-  if (apiConfig) {
-    const hasApiProxy =
-      (apiConfig.proxyMode && apiConfig.proxyUrl) ||
-      (apiConfig.proxyToClient && apiConfig.proxyClientId && apiConfig.proxyServiceName);
-
-    if (hasApiProxy) {
-      return {
-        proxyMode: Boolean(apiConfig.proxyMode),
-        proxyUrl: apiConfig.proxyUrl ?? "",
-        proxyToClient: Boolean(apiConfig.proxyToClient),
-        proxyClientId: apiConfig.proxyClientId ?? "",
-        proxyServiceName: apiConfig.proxyServiceName ?? "",
-        routeStatus: routeConfig?.status ?? defaultStatus,
-        routeBody: routeConfig?.body ?? defaultBody,
-        routeHeaders: routeConfig?.headers ?? defaultHeaders,
-        source: "api",
-      };
-    }
+  if (hasApiProxy && apiConfig) {
+    return {
+      proxyMode: Boolean(apiConfig.proxyMode),
+      proxyUrl: apiConfig.proxyUrl ?? "",
+      proxyToClient: Boolean(apiConfig.proxyToClient),
+      proxyClientId: apiConfig.proxyClientId ?? "",
+      proxyServiceName: apiConfig.proxyServiceName ?? "",
+      routeStatus: routeConfig?.status ?? defaultStatus,
+      routeBody: routeConfig?.body ?? defaultBody,
+      routeHeaders: routeConfig?.headers ?? defaultHeaders,
+      source: "api",
+      overrodeApiProxy: false,
+    };
   }
 
   // No proxy anywhere
@@ -829,6 +996,7 @@ export async function resolveProxyConfig(
     routeBody: routeConfig?.body ?? defaultBody,
     routeHeaders: routeConfig?.headers ?? defaultHeaders,
     source: "none",
+    overrodeApiProxy: false,
   };
 }
 

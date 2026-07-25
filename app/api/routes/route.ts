@@ -3,6 +3,7 @@ import {
   getRouteStatsWithConfigs,
   setRouteConfig,
   deleteRouteConfig,
+  type DynamicMockRule,
 } from "@/lib/server/request-log";
 import { getServerFromCookie } from "@/lib/server/server-session";
 
@@ -42,6 +43,8 @@ export async function POST(request: Request) {
     proxyToClient,
     proxyClientId,
     proxyServiceName,
+    explicitlyConfigured,
+    dynamicRules,
   } = body as {
     apiName?: string;
     method: string;
@@ -54,6 +57,8 @@ export async function POST(request: Request) {
     proxyToClient?: boolean;
     proxyClientId?: string;
     proxyServiceName?: string;
+    explicitlyConfigured?: boolean;
+    dynamicRules?: DynamicMockRule[];
   };
 
   if (!method || !path) {
@@ -75,8 +80,10 @@ export async function POST(request: Request) {
     proxyToClient: Boolean(proxyToClient),
     proxyClientId: proxyClientId?.trim() ?? "",
     proxyServiceName: proxyServiceName?.trim() ?? "",
-    // Saved explicitly by the user via the UI → override API-level proxy even for mock.
-    explicitlyConfigured: true,
+    explicitlyConfigured:
+      typeof explicitlyConfigured === "boolean" ? explicitlyConfigured : true,
+    mockMode: "dynamic",
+    dynamicRules: Array.isArray(dynamicRules) ? dynamicRules : [],
   });
 
   return NextResponse.json(config);

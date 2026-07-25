@@ -16,18 +16,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** OpenAPI `{id}` → Freeceptor `*` */
+/** OpenAPI `{id}` → Freeceptor `:id` */
 export function openApiPathToFreeceptor(path: string): string {
-  return path.replace(/\{[^}]+\}/g, "*");
+  return path.replace(/\{([^}]+)\}/g, (_match, name: string) => {
+    const cleaned = String(name).replace(/[^a-zA-Z0-9_]/g, "_") || "param";
+    return `:${cleaned}`;
+  });
 }
 
-/** Freeceptor `*` → OpenAPI `{paramN}` */
+/** Freeceptor `:id` / legacy `*` → OpenAPI `{id}` / `{paramN}` */
 export function freeceptorPathToOpenApi(path: string): string {
   let paramIndex = 0;
-  return path.replace(/\*/g, () => {
-    paramIndex += 1;
-    return `{param${paramIndex}}`;
-  });
+  return path
+    .split("/")
+    .map((seg) => {
+      if (seg === "*") {
+        paramIndex += 1;
+        return `{param${paramIndex}}`;
+      }
+      if (seg.startsWith(":") && seg.length > 1) {
+        return `{${seg.slice(1)}}`;
+      }
+      return seg;
+    })
+    .join("/");
 }
 
 function pickResponse(

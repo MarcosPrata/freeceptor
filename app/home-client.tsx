@@ -30,6 +30,9 @@ type ApiRequestLog = {
   proxyClientId?: string;
   proxyClientName?: string;
   proxyServiceName?: string;
+  configSource?: "route" | "api" | "none";
+  overrodeApiProxy?: boolean;
+  proxyClientOffline?: boolean;
   body: unknown;
   headers: Record<string, string>;
   responseStatus: number;
@@ -45,6 +48,36 @@ type ApiRouteStat = {
   count: number;
   firstTimestamp: string;
   lastTimestamp: string;
+  overrideMode?: "mock" | "url" | "client";
+  proxyClientId?: string;
+};
+
+type MockMatchSource = "header" | "query" | "path" | "body";
+type MockBodyKind = "json" | "raw";
+type MockOperator =
+  | "equals"
+  | "notEquals"
+  | "contains"
+  | "notContains"
+  | "startsWith"
+  | "endsWith"
+  | "exists"
+  | "notExists";
+
+type DynamicMockCondition = {
+  source: MockMatchSource;
+  key?: string;
+  bodyKind?: MockBodyKind;
+  operator: MockOperator;
+  value?: string;
+};
+
+type DynamicMockRule = {
+  id: string;
+  condition: DynamicMockCondition;
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
 };
 
 type ApiRouteConfig = {
@@ -59,6 +92,9 @@ type ApiRouteConfig = {
   proxyToClient?: boolean;
   proxyClientId?: string;
   proxyServiceName?: string;
+  explicitlyConfigured?: boolean;
+  mockMode?: "static" | "dynamic";
+  dynamicRules?: DynamicMockRule[];
 };
 
 type ApiConfig = {
@@ -99,6 +135,30 @@ function normalizePathFront(path: string): string {
   return result;
 }
 
+function isPathParamSegmentFront(seg: string): boolean {
+  return seg === "*" || (seg.startsWith(":") && seg.length > 1);
+}
+
+function pathHasParamsFront(path: string): boolean {
+  return path.split("/").filter(Boolean).some(isPathParamSegmentFront);
+}
+
+function listPathParamNames(path: string): string[] {
+  return path
+    .split("/")
+    .filter(Boolean)
+    .filter((s) => s.startsWith(":") && s.length > 1)
+    .map((s) => s.slice(1));
+}
+
+function isValidParamName(name: string): boolean {
+  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name);
+}
+
+function newDynamicRuleId(): string {
+  return `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function statusPillClass(status: number): string {
   if (status >= 200 && status < 300) {
     return "bg-emerald-600 text-white dark:bg-emerald-500 dark:text-zinc-950";
@@ -116,6 +176,45 @@ function statusPillClass(status: number): string {
     return "bg-cyan-600 text-white dark:bg-cyan-500 dark:text-zinc-950";
   }
   return "bg-zinc-700 text-white dark:bg-zinc-300 dark:text-zinc-950";
+}
+
+type ResponseModeBadge = "mock" | "url" | "client";
+type ResponseModeBadgeVariant = "filled" | "outline";
+
+function responseModeBadgeClass(
+  mode: ResponseModeBadge,
+  variant: ResponseModeBadgeVariant = "filled",
+  offline = false,
+): string {
+  if (offline) {
+    return cn(
+      "ml-2 inline-flex shrink-0 items-center rounded px-1 py-px font-sans text-[8px] font-semibold uppercase tracking-wide",
+      variant === "filled"
+        ? "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+        : "border border-zinc-400/70 bg-transparent text-zinc-500 dark:border-zinc-600 dark:text-zinc-500",
+    );
+  }
+  return cn(
+    "ml-2 inline-flex shrink-0 items-center rounded px-1 py-px font-sans text-[8px] font-semibold uppercase tracking-wide",
+    variant === "filled" &&
+      mode === "mock" &&
+      "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300",
+    variant === "filled" &&
+      mode === "url" &&
+      "bg-violet-100 text-violet-800 dark:bg-violet-950/60 dark:text-violet-300",
+    variant === "filled" &&
+      mode === "client" &&
+      "bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300",
+    variant === "outline" &&
+      mode === "mock" &&
+      "border border-amber-400/70 bg-transparent text-amber-700 dark:border-amber-500/50 dark:text-amber-300",
+    variant === "outline" &&
+      mode === "url" &&
+      "border border-violet-400/70 bg-transparent text-violet-700 dark:border-violet-500/50 dark:text-violet-300",
+    variant === "outline" &&
+      mode === "client" &&
+      "border border-blue-400/70 bg-transparent text-blue-700 dark:border-blue-500/50 dark:text-blue-300",
+  );
 }
 
 function renderKeyValueTable(data: Record<string, string | string[]>) {
@@ -285,6 +384,13 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [configProxyServiceName, setConfigProxyServiceName] = useState("");
   const [connectedClients, setConnectedClients] = useState<ProxyClientInfo[]>([]);
   const [configMessage, setConfigMessage] = useState<string | null>(null);
+  const [dynamicRules, setDynamicRules] = useState<DynamicMockRule[]>([]);
+  const [expandedDynamicRuleIds, setExpandedDynamicRuleIds] = useState<string[]>([]);
+  const [draggingRuleId, setDraggingRuleId] = useState<string | null>(null);
+  const [ruleDropIndex, setRuleDropIndex] = useState<number | null>(null);
+  const dynamicRulesRef = useRef<DynamicMockRule[]>([]);
+  const draggingRuleIdRef = useRef<string | null>(null);
+  const ruleDropIndexRef = useRef<number | null>(null);
   const [showAddRouteForm, setShowAddRouteForm] = useState(false);
   const [newRouteMethod, setNewRouteMethod] = useState("GET");
   const [newRoutePath, setNewRoutePath] = useState("/");
@@ -296,6 +402,13 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     affectedRoutes: ApiRouteStat[];
   } | null>(null);
   const [wildcardConverting, setWildcardConverting] = useState(false);
+  const [paramNameModal, setParamNameModal] = useState<{
+    route: ApiRouteStat;
+    segIndex: number;
+    segments: string[];
+    paramName: string;
+    error: string | null;
+  } | null>(null);
   const [editingWildcardSegment, setEditingWildcardSegment] = useState<{
     routeId: string;
     segIndex: number;
@@ -333,6 +446,10 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     apiListRef.current = apiList;
   }, [apiList]);
 
+  useEffect(() => {
+    dynamicRulesRef.current = dynamicRules;
+  }, [dynamicRules]);
+
   // Restore UI state (selected API + active tab + open route config form) from
   // sessionStorage synchronously before the browser paints so the user doesn't
   // lose their place on HMR reloads.
@@ -361,7 +478,15 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         if (cs.configBody !== undefined) setConfigBody(cs.configBody);
         if (cs.configHeaders !== undefined) setConfigHeaders(cs.configHeaders);
         // Restore even when null (null is a meaningful state)
-        if ("configProxyModeType" in cs) setConfigProxyModeType(cs.configProxyModeType ?? null);
+        if ("configProxyModeType" in cs) {
+          const restored = cs.configProxyModeType ?? null;
+          // Legacy session value "dynamic" → unified mock mode
+          setConfigProxyModeType(
+            (restored as string) === "dynamic"
+              ? "disabled"
+              : (restored as ProxyModeType | null),
+          );
+        }
         if (cs.configProxyUrl !== undefined) setConfigProxyUrl(cs.configProxyUrl);
         if (cs.configProxyClientId !== undefined) setConfigProxyClientId(cs.configProxyClientId);
         if (cs.configProxyServiceName !== undefined) setConfigProxyServiceName(cs.configProxyServiceName);
@@ -661,6 +786,78 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     window.addEventListener("pointercancel", onUp);
   }
 
+  function getDynamicRuleInsertIndex(clientY: number): number {
+    const rows = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-dynamic-rule]"),
+    );
+    for (let i = 0; i < rows.length; i++) {
+      const rect = rows[i].getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return i;
+    }
+    return rows.length;
+  }
+
+  function beginDynamicRuleDrag(
+    event: React.PointerEvent<HTMLElement>,
+    ruleId: string,
+  ) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const pointerId = event.pointerId;
+    const startY = event.clientY;
+    let dragging = false;
+    const fromIndex = dynamicRulesRef.current.findIndex((r) => r.id === ruleId);
+    if (fromIndex < 0) return;
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      if (!dragging) {
+        if (Math.abs(ev.clientY - startY) < 5) return;
+        dragging = true;
+        draggingRuleIdRef.current = ruleId;
+        setDraggingRuleId(ruleId);
+      }
+      ev.preventDefault();
+      const insertAt = getDynamicRuleInsertIndex(ev.clientY);
+      ruleDropIndexRef.current = insertAt;
+      setRuleDropIndex((prev) => (prev === insertAt ? prev : insertAt));
+    };
+
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+
+      if (!dragging) return;
+
+      const insertAt =
+        ruleDropIndexRef.current ?? getDynamicRuleInsertIndex(ev.clientY);
+      const list = [...dynamicRulesRef.current];
+      const from = list.findIndex((r) => r.id === ruleId);
+      draggingRuleIdRef.current = null;
+      ruleDropIndexRef.current = null;
+      setDraggingRuleId(null);
+      setRuleDropIndex(null);
+
+      if (from < 0) return;
+      if (insertAt === from || insertAt === from + 1) return;
+
+      const [moved] = list.splice(from, 1);
+      let adjusted = insertAt;
+      if (from < insertAt) adjusted -= 1;
+      adjusted = Math.max(0, Math.min(adjusted, list.length));
+      list.splice(adjusted, 0, moved);
+      setDynamicRules(list);
+    };
+
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }
+
   function clearLocalSession() {
     authenticatedRef.current = false;
     try {
@@ -873,6 +1070,8 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     setConfigProxyModeType(apiHasProxy ? null : "disabled");
     setConfigProxyClientId("");
     setConfigProxyServiceName("");
+    setDynamicRules([]);
+    setExpandedDynamicRuleIds([]);
 
     try {
       const res = await fetch(`/api/routes/configs?apiName=${encodeURIComponent(selectedApi)}`);
@@ -902,14 +1101,17 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         } else if (match.proxyMode && match.proxyUrl) {
           setConfigProxyModeType("url");
           setConfigProxyUrl(match.proxyUrl);
-        } else {
-          // Explicit mock config (proxyMode: false) — always show as "disabled" regardless
-          // of whether the API has a proxy, since this is an intentional override.
+        } else if (match.explicitlyConfigured) {
           setConfigProxyModeType("disabled");
+          const rules = match.dynamicRules ?? [];
+          setDynamicRules(rules);
+          setExpandedDynamicRuleIds(rules[0] ? [rules[0].id] : []);
+        } else {
+          setConfigProxyModeType(apiHasProxy ? null : "disabled");
+          setDynamicRules([]);
+          setExpandedDynamicRuleIds([]);
         }
       }
-      // If no match AND apiHasProxy: stays null (route inherits API proxy, no override)
-      // If no match AND !apiHasProxy: stays "disabled" (mock as default)
     } catch (err) {
       console.error("Erro ao carregar config da rota:", err);
     }
@@ -934,6 +1136,9 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         proxyToClient: false,
         proxyClientId: "",
         proxyServiceName: "",
+        explicitlyConfigured: false,
+        mockMode: "dynamic",
+        dynamicRules: [],
       };
 
       const configsRes = await fetch(
@@ -949,6 +1154,24 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         if (match) config = match;
       }
 
+      const apiCfg = apiList.find(
+        (a) => a.apiName.toLowerCase() === selectedApi.toLowerCase(),
+      );
+      const apiUsesProxy = Boolean(
+        apiCfg &&
+          ((apiCfg.proxyMode && apiCfg.proxyUrl) ||
+            (apiCfg.proxyToClient &&
+              apiCfg.proxyClientId &&
+              apiCfg.proxyServiceName)),
+      );
+      const sourceHasRouteProxy = Boolean(
+        (config.proxyMode && config.proxyUrl) ||
+          (config.proxyToClient &&
+            config.proxyClientId &&
+            config.proxyServiceName),
+      );
+      const inheritApiProxy = apiUsesProxy && !sourceHasRouteProxy;
+
       const postRes = await fetch("/api/routes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -959,11 +1182,18 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           status: config.status ?? 200,
           headers: config.headers ?? {},
           responseBody: config.body ?? { status: "ok" },
-          proxyMode: config.proxyMode ?? false,
-          proxyUrl: config.proxyUrl ?? "",
-          proxyToClient: config.proxyToClient ?? false,
-          proxyClientId: config.proxyClientId ?? "",
-          proxyServiceName: config.proxyServiceName ?? "",
+          proxyMode: inheritApiProxy ? false : (config.proxyMode ?? false),
+          proxyUrl: inheritApiProxy ? "" : (config.proxyUrl ?? ""),
+          proxyToClient: inheritApiProxy ? false : (config.proxyToClient ?? false),
+          proxyClientId: inheritApiProxy ? "" : (config.proxyClientId ?? ""),
+          proxyServiceName: inheritApiProxy ? "" : (config.proxyServiceName ?? ""),
+          explicitlyConfigured: inheritApiProxy
+            ? false
+            : sourceHasRouteProxy ||
+              Boolean(config.explicitlyConfigured) ||
+              !apiUsesProxy,
+          mockMode: "dynamic",
+          dynamicRules: config.dynamicRules ?? [],
         }),
       });
       if (!postRes.ok) throw new Error(await postRes.text());
@@ -993,24 +1223,41 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         setRoutes((await routesRes.json()) as ApiRouteStat[]);
       }
     } catch (err) {
-      console.error("Erro ao converter para coringa:", err);
+      console.error("Erro ao converter para parâmetro:", err);
     } finally {
       setWildcardConverting(false);
     }
   }
 
-  async function handleSegmentClick(
-    route: ApiRouteStat,
-    segIndex: number,
-    segments: string[],
-  ) {
-    if (segments[segIndex] === "*") return;
+  async function confirmParamNameModal() {
+    if (!paramNameModal) return;
+    const name = paramNameModal.paramName.trim();
+    if (!isValidParamName(name)) {
+      setParamNameModal({
+        ...paramNameModal,
+        error: "Use um nome válido (ex.: id, userId).",
+      });
+      return;
+    }
+    const { route, segIndex, segments } = paramNameModal;
+    const otherNames = segments
+      .map((s, i) => (i !== segIndex && s.startsWith(":") ? s.slice(1) : null))
+      .filter(Boolean);
+    if (otherNames.includes(name)) {
+      setParamNameModal({
+        ...paramNameModal,
+        error: "Já existe um parâmetro com esse nome neste path.",
+      });
+      return;
+    }
 
     const newSegments = [...segments];
-    newSegments[segIndex] = "*";
+    newSegments[segIndex] = `:${name}`;
     const newPath = `/${newSegments.join("/")}`;
-
-    if (normalizePathFront(route.path) === normalizePathFront(newPath)) return;
+    if (normalizePathFront(route.path) === normalizePathFront(newPath)) {
+      setParamNameModal(null);
+      return;
+    }
 
     try {
       const params = new URLSearchParams({
@@ -1022,23 +1269,62 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       const res = await fetch(`/api/routes/wildcard-preview?${params}`);
       if (!res.ok) throw new Error(await res.text());
       const affected = (await res.json()) as ApiRouteStat[];
+      setParamNameModal(null);
       setWildcardModal({ route, newPath, affectedRoutes: affected });
     } catch (err) {
-      console.error("Erro ao preview wildcard:", err);
+      console.error("Erro ao preview parâmetro:", err);
+      setParamNameModal({
+        ...paramNameModal,
+        error: "Não foi possível preparar o merge.",
+      });
     }
   }
 
-  async function convertWildcardToFixed(
+  function handleSegmentClick(
     route: ApiRouteStat,
     segIndex: number,
     segments: string[],
-    fixedValue: string,
   ) {
-    const trimmed = fixedValue.trim();
-    if (!trimmed || trimmed.includes("/") || trimmed.includes("*")) return;
+    const seg = segments[segIndex];
+    if (seg.startsWith(":") && seg.length > 1) return;
+
+    // Legacy * → migrate to named param
+    const suggested =
+      seg === "*"
+        ? `param${segments.filter((s, i) => i < segIndex && isPathParamSegmentFront(s)).length}`
+        : "id";
+
+    setParamNameModal({
+      route,
+      segIndex,
+      segments,
+      paramName: suggested,
+      error: null,
+    });
+  }
+
+  async function renameNamedPathParam(
+    route: ApiRouteStat,
+    segIndex: number,
+    segments: string[],
+    nextNameRaw: string,
+  ) {
+    const currentSeg = segments[segIndex] ?? "";
+    if (!currentSeg.startsWith(":") || currentSeg.length < 2) return;
+
+    const oldName = currentSeg.slice(1);
+    let nextName = nextNameRaw.trim();
+    if (nextName.startsWith(":")) nextName = nextName.slice(1).trim();
+
+    if (!isValidParamName(nextName)) return;
+
+    const otherNames = segments
+      .map((s, i) => (i !== segIndex && s.startsWith(":") ? s.slice(1) : null))
+      .filter(Boolean);
+    if (otherNames.includes(nextName)) return;
 
     const newSegments = [...segments];
-    newSegments[segIndex] = trimmed;
+    newSegments[segIndex] = `:${nextName}`;
     const newPath = `/${newSegments.join("/")}`;
 
     if (normalizePathFront(route.path) === normalizePathFront(newPath)) {
@@ -1060,6 +1346,9 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         proxyToClient: false,
         proxyClientId: "",
         proxyServiceName: "",
+        explicitlyConfigured: false,
+        mockMode: "dynamic",
+        dynamicRules: [],
       };
 
       const configsRes = await fetch(
@@ -1074,6 +1363,15 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         );
         if (match) config = match;
       }
+
+      const remappedRules = (config.dynamicRules ?? []).map((rule) => {
+        if (rule.condition.source !== "path") return rule;
+        if (rule.condition.key !== oldName) return rule;
+        return {
+          ...rule,
+          condition: { ...rule.condition, key: nextName },
+        };
+      });
 
       const postRes = await fetch("/api/routes", {
         method: "POST",
@@ -1090,6 +1388,9 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           proxyToClient: config.proxyToClient ?? false,
           proxyClientId: config.proxyClientId ?? "",
           proxyServiceName: config.proxyServiceName ?? "",
+          explicitlyConfigured: Boolean(config.explicitlyConfigured),
+          mockMode: "dynamic",
+          dynamicRules: remappedRules,
         }),
       });
       if (!postRes.ok) throw new Error(await postRes.text());
@@ -1104,7 +1405,9 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         }),
       });
 
-      if (configRouteId === route.id) setConfigRouteId(null);
+      if (configRouteId === route.id) {
+        setConfigRouteId(null);
+      }
       setEditingWildcardSegment(null);
 
       const routesRes = await fetch(
@@ -1114,7 +1417,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         setRoutes((await routesRes.json()) as ApiRouteStat[]);
       }
     } catch (err) {
-      console.error("Erro ao converter coringa para termo fixo:", err);
+      console.error("Erro ao renomear parâmetro do path:", err);
     } finally {
       setSegmentEditSaving(false);
     }
@@ -1619,6 +1922,15 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
       currentApiConfig.proxyClientId &&
       currentApiConfig.proxyServiceName,
   );
+  const apiProxyClientOnline = Boolean(
+    apiHasClientProxy &&
+      connectedClients.some(
+        (c) =>
+          c.clientId === currentApiConfig?.proxyClientId &&
+          c.status === "online",
+      ),
+  );
+  const apiClientProxyInactive = apiHasClientProxy && !apiProxyClientOnline;
 
   const logsTotalPages = Math.max(1, Math.ceil(logs.length / LOGS_PAGE_SIZE));
   const safeLogsPage = Math.min(Math.max(1, logsPage), logsTotalPages);
@@ -1901,16 +2213,27 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
             <button
               type="button"
               onClick={openApiConfig}
+              title={
+                apiClientProxyInactive
+                  ? "Proxy configurado, mas o cliente está offline"
+                  : undefined
+              }
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
-                apiHasClientProxy
-                  ? "bg-blue-600 text-white dark:bg-blue-500 dark:text-zinc-950"
-                  : apiHasUrlProxy
-                    ? "bg-violet-600 text-white dark:bg-violet-500 dark:text-zinc-950"
-                    : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
+                apiClientProxyInactive
+                  ? "border border-zinc-300 bg-zinc-200 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400"
+                  : apiHasClientProxy
+                    ? "bg-blue-600 text-white dark:bg-blue-500 dark:text-zinc-950"
+                    : apiHasUrlProxy
+                      ? "bg-violet-600 text-white dark:bg-violet-500 dark:text-zinc-950"
+                      : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
               )}
             >
-              {apiHasProxy ? "Proxy da API ativo" : "Configurar proxy da API"}
+              {apiClientProxyInactive
+                ? "Proxy da API (offline)"
+                : apiHasProxy
+                  ? "Proxy da API ativo"
+                  : "Configurar proxy da API"}
             </button>
           </div>
         </div>
@@ -1926,12 +2249,17 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           <div
             className={cn(
               "rounded-md border px-3 py-2 text-[11px]",
-              apiHasClientProxy
-                ? "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200"
-                : "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200",
+              apiClientProxyInactive
+                ? "border-zinc-300 bg-zinc-100 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400"
+                : apiHasClientProxy
+                  ? "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200"
+                  : "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-200",
             )}
           >
-            <span className="font-semibold">Proxy da API &quot;{selectedApi}&quot; ativo</span>
+            <span className="font-semibold">
+              Proxy da API &quot;{selectedApi}&quot;{" "}
+              {apiClientProxyInactive ? "(cliente offline)" : "ativo"}
+            </span>
             {currentApiConfig?.proxyMode && currentApiConfig.proxyUrl && (
               <span> → URL: <code className="font-mono">{currentApiConfig.proxyUrl}</code></span>
             )}
@@ -1947,9 +2275,11 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
             <span
               className={cn(
                 "ml-2",
-                apiHasClientProxy
-                  ? "text-blue-700 dark:text-blue-400"
-                  : "text-violet-700 dark:text-violet-400",
+                apiClientProxyInactive
+                  ? "text-zinc-500 dark:text-zinc-500"
+                  : apiHasClientProxy
+                    ? "text-blue-700 dark:text-blue-400"
+                    : "text-violet-700 dark:text-violet-400",
               )}
             >
               (rotas com proxy próprio têm prioridade)
@@ -2127,16 +2457,51 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                       </span>
                       <span className="inline-flex items-center gap-2 font-mono text-[11px]">
                         <span>{log.path || "-"}</span>
-                        {log.proxyTargetUrl && (
-                          <span className="ml-2 inline-flex items-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-violet-500 dark:text-zinc-950">
-                            proxy url
-                          </span>
-                        )}
-                        {log.proxyClientId && (
-                          <span className="ml-2 inline-flex items-center rounded-full bg-blue-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-blue-500 dark:text-zinc-950">
-                            proxy client
-                          </span>
-                        )}
+                        {(() => {
+                          const mode: ResponseModeBadge = log.proxyClientId
+                            ? "client"
+                            : log.proxyTargetUrl
+                              ? "url"
+                              : "mock";
+                          const isOverride = Boolean(log.overrodeApiProxy);
+                          const clientOffline =
+                            mode === "client" &&
+                            (Boolean(log.proxyClientOffline) ||
+                              (log.responseStatus === 502 &&
+                                typeof log.responseBody === "object" &&
+                                log.responseBody != null &&
+                                "error" in log.responseBody &&
+                                String(
+                                  (log.responseBody as { error?: unknown }).error,
+                                ).includes("cliente conectado")));
+                          const title = clientOffline
+                            ? isOverride
+                              ? "Proxy client offline (sobrescreve o proxy da API)"
+                              : "Proxy client offline (da API)"
+                            : isOverride
+                              ? mode === "mock"
+                                ? "Mock (sobrescreve o proxy da API)"
+                                : mode === "url"
+                                  ? "Proxy URL (sobrescreve o proxy da API)"
+                                  : "Proxy client (sobrescreve o proxy da API)"
+                              : mode === "client"
+                                ? "Proxy client (da API)"
+                                : mode === "url"
+                                  ? "Proxy URL (da API)"
+                                  : "Mock (comportamento padrão)";
+                          return (
+                            <span
+                              className={responseModeBadgeClass(
+                                mode,
+                                isOverride ? "filled" : "outline",
+                                clientOffline,
+                              )}
+                              title={title}
+                            >
+                              {clientOffline ? "client · offline" : mode}
+                            </span>
+                          );
+                        })()}
                       </span>
                       {!expandedIds.includes(log.id) && (
                         <span
@@ -2224,23 +2589,62 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                   </div>
                                 </div>
                               )}
-                              {log.proxyClientId && (
-                                <div className="mb-2 rounded border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+                              {log.proxyClientId && (() => {
+                                const clientOffline =
+                                  Boolean(log.proxyClientOffline) ||
+                                  (log.responseStatus === 502 &&
+                                    typeof log.responseBody === "object" &&
+                                    log.responseBody != null &&
+                                    "error" in log.responseBody &&
+                                    String(
+                                      (log.responseBody as { error?: unknown }).error,
+                                    ).includes("cliente conectado"));
+                                return (
+                                <div
+                                  className={cn(
+                                    "mb-2 rounded border px-2 py-1.5 text-[11px]",
+                                    clientOffline
+                                      ? "border-zinc-300 bg-zinc-100 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400"
+                                      : "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200",
+                                  )}
+                                >
                                   <div>
-                                    <span className="font-semibold">Proxy Client habilitado</span>
-                                    <span>, respondido pelo cliente:</span>
+                                    <span className="font-semibold">
+                                      Proxy Client habilitado
+                                    </span>
+                                    <span>
+                                      {clientOffline
+                                        ? ", cliente offline/indisponível:"
+                                        : ", respondido pelo cliente:"}
+                                    </span>
                                   </div>
                                   <div className="mt-2 flex items-center gap-2">
-                                    <span className="rounded bg-blue-200 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-blue-800 dark:bg-blue-800 dark:text-blue-200">
+                                    <span
+                                      className={cn(
+                                        "rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold",
+                                        clientOffline
+                                          ? "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                                          : "bg-blue-200 text-blue-800 dark:bg-blue-800 dark:text-blue-200",
+                                      )}
+                                    >
                                       {log.proxyClientName || log.proxyClientId}
                                     </span>
-                                    <span className="text-blue-600 dark:text-blue-400">→</span>
+                                    <span
+                                      className={cn(
+                                        clientOffline
+                                          ? "text-zinc-500"
+                                          : "text-blue-600 dark:text-blue-400",
+                                      )}
+                                    >
+                                      →
+                                    </span>
                                     <span className="font-mono text-[11px]">
                                       {log.proxyServiceName}
                                     </span>
                                   </div>
                                 </div>
-                              )}
+                                );
+                              })()}
                               <div className="grid gap-3 md:grid-cols-2">
                                 <div>
                                   <div className="mb-1 text-[11px] text-zinc-500">
@@ -2366,6 +2770,10 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                   proxyToClient: false,
                                   proxyClientId: "",
                                   proxyServiceName: "",
+                                  // Placeholder until the user saves an override in the panel.
+                                  explicitlyConfigured: false,
+                                  mockMode: "dynamic",
+                                  dynamicRules: [],
                                 }),
                               });
                               if (!res.ok) {
@@ -2460,13 +2868,13 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                       >
                         {route.method}
                       </span>
-                      <span className="font-mono text-[11px]">
+                      <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-[11px]">
                         {(() => {
                           const segments = route.path.split("/").filter(Boolean);
                           if (segments.length === 0) return "-";
                           return segments.map((seg, i) => (
                             <span key={`${route.id}-${i}`}>
-                              {seg === "*" ? (
+                              {isPathParamSegmentFront(seg) ? (
                                 editingWildcardSegment?.routeId === route.id &&
                                 editingWildcardSegment.segIndex === i ? (
                                   <form
@@ -2474,7 +2882,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                     onClick={(e) => e.stopPropagation()}
                                     onSubmit={(e) => {
                                       e.preventDefault();
-                                      void convertWildcardToFixed(
+                                      void renameNamedPathParam(
                                         route,
                                         i,
                                         segments,
@@ -2482,10 +2890,13 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                       );
                                     }}
                                   >
+                                    <span className="font-mono text-[11px] text-zinc-400">
+                                      :
+                                    </span>
                                     <input
                                       autoFocus
                                       type="text"
-                                      placeholder="termo"
+                                      placeholder="nome"
                                       className="h-5 w-24 rounded border border-zinc-300 bg-white px-1.5 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
                                       value={editingWildcardSegment.value}
                                       onChange={(e) =>
@@ -2518,27 +2929,37 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                   <button
                                     type="button"
                                     className="rounded bg-amber-100 px-1 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60"
-                                    title="Clique para definir um termo fixo"
+                                    title={
+                                      seg === "*"
+                                        ? "Clique para nomear o parâmetro"
+                                        : "Clique para renomear o parâmetro"
+                                    }
                                     onClick={(e) => {
                                       e.stopPropagation();
+                                      if (seg === "*") {
+                                        handleSegmentClick(route, i, segments);
+                                        return;
+                                      }
                                       setEditingWildcardSegment({
                                         routeId: route.id,
                                         segIndex: i,
-                                        value: "",
+                                        value: seg.startsWith(":")
+                                          ? seg.slice(1)
+                                          : seg,
                                       });
                                     }}
                                   >
-                                    *
+                                    {seg}
                                   </button>
                                 )
                               ) : (
                                 <button
                                   type="button"
                                   className="text-zinc-800 hover:text-blue-600 hover:underline dark:text-zinc-200 dark:hover:text-blue-400"
-                                  title="Clique para converter em coringa"
+                                  title="Clique para converter em parâmetro nomeado"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    void handleSegmentClick(route, i, segments);
+                                    handleSegmentClick(route, i, segments);
                                   }}
                                 >
                                   {seg}
@@ -2549,6 +2970,63 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                               )}
                             </span>
                           ));
+                        })()}
+                        {(() => {
+                          const apiHasProxy = apiHasClientProxy || apiHasUrlProxy;
+                          const inheritsApiProxy =
+                            !route.overrideMode && apiHasProxy;
+                          // Preenchido só quando a rota sobrescreve um proxy ativo da API.
+                          const isOverride = Boolean(route.overrideMode) && apiHasProxy;
+                          const mode: ResponseModeBadge = inheritsApiProxy
+                            ? apiHasClientProxy
+                              ? "client"
+                              : "url"
+                            : route.overrideMode === "url"
+                              ? "url"
+                              : route.overrideMode === "client"
+                                ? "client"
+                                : "mock";
+                          const effectiveClientId =
+                            mode === "client"
+                              ? route.overrideMode === "client"
+                                ? route.proxyClientId
+                                : currentApiConfig?.proxyClientId
+                              : undefined;
+                          const clientOffline = Boolean(
+                            effectiveClientId &&
+                              !connectedClients.some(
+                                (c) =>
+                                  c.clientId === effectiveClientId &&
+                                  c.status === "online",
+                              ),
+                          );
+                          const title = clientOffline
+                            ? isOverride
+                              ? "Proxy client offline (sobrescreve o proxy da API)"
+                              : "Proxy client offline (da API)"
+                            : isOverride
+                              ? mode === "mock"
+                                ? "Mock (sobrescreve o proxy da API)"
+                                : mode === "url"
+                                  ? "Proxy URL (sobrescreve o proxy da API)"
+                                  : "Proxy client (sobrescreve o proxy da API)"
+                              : inheritsApiProxy
+                                ? mode === "client"
+                                  ? "Proxy client (da API)"
+                                  : "Proxy URL (da API)"
+                                : "Mock (comportamento padrão)";
+                          return (
+                            <span
+                              className={responseModeBadgeClass(
+                                mode,
+                                isOverride ? "filled" : "outline",
+                                clientOffline,
+                              )}
+                              title={title}
+                            >
+                              {clientOffline ? "client · offline" : mode}
+                            </span>
+                          );
                         })()}
                       </span>
                       <span className="text-[11px] text-zinc-600 dark:text-zinc-300">
@@ -2597,22 +3075,60 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                             e.preventDefault();
                             setConfigMessage(null);
                             try {
-                              // null = "usar proxy da API" → remove qualquer override de rota
+                              const isPatternPath = pathHasParamsFront(route.path);
+
                               if (configProxyModeType === null) {
-                                const res = await fetch("/api/routes", {
-                                  method: "DELETE",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({
-                                    apiName: selectedApi,
-                                    method: route.method,
-                                    path: route.path,
-                                  }),
-                                });
-                                if (!res.ok) {
-                                  const text = await res.text();
-                                  throw new Error(text);
+                                if (isPatternPath) {
+                                  const statusNumber = Number(configStatus) || 200;
+                                  const parsedBody = configBody
+                                    ? JSON.parse(configBody)
+                                    : { status: "ok" };
+                                  const parsedHeaders = configHeaders
+                                    ? JSON.parse(configHeaders)
+                                    : {};
+                                  const res = await fetch("/api/routes", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({
+                                      apiName: selectedApi,
+                                      method: route.method,
+                                      path: route.path,
+                                      status: statusNumber,
+                                      headers: parsedHeaders,
+                                      responseBody: parsedBody,
+                                      proxyMode: false,
+                                      proxyUrl: "",
+                                      proxyToClient: false,
+                                      proxyClientId: "",
+                                      proxyServiceName: "",
+                                      explicitlyConfigured: false,
+                                      mockMode: "dynamic",
+                                      dynamicRules: [],
+                                    }),
+                                  });
+                                  if (!res.ok) throw new Error(await res.text());
+                                } else {
+                                  const res = await fetch("/api/routes", {
+                                    method: "DELETE",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({
+                                      apiName: selectedApi,
+                                      method: route.method,
+                                      path: route.path,
+                                    }),
+                                  });
+                                  if (!res.ok) throw new Error(await res.text());
                                 }
-                                setConfigMessage("Override removido. Esta rota usará o proxy da API.");
+                                setRoutes((prev) =>
+                                  prev.map((r) =>
+                                    r.id === route.id
+                                      ? { ...r, overrideMode: undefined }
+                                      : r,
+                                  ),
+                                );
+                                setConfigMessage(
+                                  "Override removido. Esta rota usará o proxy da API.",
+                                );
                                 return;
                               }
 
@@ -2645,21 +3161,50 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                   headers: parsedHeaders,
                                   responseBody: parsedBody,
                                   proxyMode: configProxyModeType === "url",
-                                  proxyUrl: configProxyModeType === "url" ? configProxyUrl.trim() : "",
+                                  proxyUrl:
+                                    configProxyModeType === "url"
+                                      ? configProxyUrl.trim()
+                                      : "",
                                   proxyToClient: configProxyModeType === "client",
                                   proxyClientId:
-                                    configProxyModeType === "client" ? configProxyClientId : "",
+                                    configProxyModeType === "client"
+                                      ? configProxyClientId
+                                      : "",
                                   proxyServiceName:
                                     configProxyModeType === "client"
                                       ? configProxyServiceName
                                       : "",
+                                  explicitlyConfigured: true,
+                                  mockMode: "dynamic",
+                                  dynamicRules:
+                                    configProxyModeType === "disabled"
+                                      ? dynamicRules
+                                      : [],
                                 }),
                               });
 
-                              if (!res.ok) {
-                                const text = await res.text();
-                                throw new Error(text);
-                              }
+                              if (!res.ok) throw new Error(await res.text());
+
+                              const nextOverrideMode =
+                                configProxyModeType === "disabled"
+                                  ? "mock"
+                                  : configProxyModeType === "url"
+                                    ? "url"
+                                    : "client";
+                              setRoutes((prev) =>
+                                prev.map((r) =>
+                                  r.id === route.id
+                                    ? {
+                                        ...r,
+                                        overrideMode: nextOverrideMode,
+                                        proxyClientId:
+                                          nextOverrideMode === "client"
+                                            ? configProxyClientId
+                                            : undefined,
+                                      }
+                                    : r,
+                                ),
+                              );
 
                               setConfigMessage(
                                 "Configuração salva. As próximas chamadas dessa rota usarão essa resposta.",
@@ -2683,25 +3228,39 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                               )}
                             </span>
                             <div className="flex flex-wrap gap-3">
-                              {(["disabled", "url", "client"] as const).map((mode) => {
+                              {(
+                                [
+                                  ...(apiHasProxy ? (["api"] as const) : []),
+                                  "disabled",
+                                  "url",
+                                  "client",
+                                ] as const
+                              ).map((mode) => {
                                 const labels: Record<string, string> = {
-                                  disabled: "Resposta mock",
+                                  api: "Usar proxy da API",
+                                  disabled: "Mock",
                                   url: "Proxy para URL",
                                   client: "Proxy para cliente conectado",
                                 };
-                                const isChecked = configProxyModeType === mode;
+                                const isChecked =
+                                  mode === "api"
+                                    ? configProxyModeType === null
+                                    : configProxyModeType === mode;
                                 return (
-                                  <label key={mode} className="inline-flex cursor-pointer items-center gap-1.5 text-[11px]">
+                                  <label
+                                    key={mode}
+                                    className="inline-flex cursor-pointer items-center gap-1.5 text-[11px]"
+                                  >
                                     <input
                                       type="radio"
                                       name="proxyModeType"
                                       className="h-3.5 w-3.5"
                                       checked={isChecked}
-                                      onChange={() => setConfigProxyModeType(mode)}
-                                      onClick={() => {
-                                        // Toggle: clicking an already-selected radio deselects it
-                                        if (isChecked) setConfigProxyModeType(null);
-                                      }}
+                                      onChange={() =>
+                                        setConfigProxyModeType(
+                                          mode === "api" ? null : mode,
+                                        )
+                                      }
                                     />
                                     <span>{labels[mode]}</span>
                                   </label>
@@ -2710,10 +3269,14 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                             </div>
                           </div>
 
-                          {/* When null + apiHasProxy: show informational banner */}
                           {configProxyModeType === null && apiHasProxy && (
                             <div className="mb-1 rounded border border-zinc-200 bg-white px-2 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
-                              Nenhum override configurado — esta rota usa o <strong className="text-zinc-700 dark:text-zinc-300">proxy da API</strong>. Selecione um modo acima para sobrescrever o comportamento desta rota específica.
+                              Nenhum override configurado — esta rota usa o{" "}
+                              <strong className="text-zinc-700 dark:text-zinc-300">
+                                proxy da API
+                              </strong>
+                              . Selecione outro modo acima para sobrescrever o
+                              comportamento desta rota específica.
                             </div>
                           )}
 
@@ -2805,68 +3368,559 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                           )}
 
                           {configProxyModeType === "disabled" && (
-                            <>
-                              <div className="flex flex-wrap gap-2">
-                                <label className="flex items-center gap-1 text-[11px]">
-                                  <span className="text-zinc-500">Status</span>
-                                  <input
-                                    type="number"
-                                    min={100}
-                                    max={599}
-                                    className="h-6 w-16 rounded border border-zinc-300 bg-white px-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                    value={configStatus}
-                                    onChange={(e) => setConfigStatus(e.target.value)}
-                                  />
-                                </label>
+                            <div className="mt-1 space-y-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] font-medium text-zinc-500">
+                                  Condições (primeira que bater ganha)
+                                </span>
                               </div>
-                              <div className="grid gap-2 md:grid-cols-2">
-                                <label className="flex flex-col gap-1">
-                                  <span className="text-[11px] text-zinc-500">Body (JSON)</span>
-                                  <textarea
-                                    rows={6}
-                                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                    value={configBody}
-                                    onChange={(e) => setConfigBody(e.target.value)}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const pathParams = listPathParamNames(route.path);
+                                  const id = newDynamicRuleId();
+                                  const rule: DynamicMockRule = {
+                                    id,
+                                    condition: {
+                                      source: pathParams.length ? "path" : "query",
+                                      key: pathParams[0] ?? "",
+                                      operator: "equals",
+                                      value: "",
+                                      bodyKind: "json",
+                                    },
+                                    status: 200,
+                                    body: { status: "ok" },
+                                    headers: {},
+                                  };
+                                  setDynamicRules((prev) => [rule, ...prev]);
+                                  setExpandedDynamicRuleIds((prev) => [...prev, id]);
+                                }}
+                                className="flex w-full items-center justify-center rounded-md border border-dashed border-zinc-300 px-3 py-2 text-[11px] text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+                              >
+                                + Adicionar condição
+                              </button>
+                              {dynamicRules.map((rule, ruleIndex) => {
+                                const expanded = expandedDynamicRuleIds.includes(rule.id);
+                                const pathParams = listPathParamNames(route.path);
+                                const conditionPath = (() => {
+                                  const parts: string[] = [rule.condition.source];
+                                  if (rule.condition.source === "body") {
+                                    parts.push(rule.condition.bodyKind ?? "json");
+                                    if (
+                                      (rule.condition.bodyKind ?? "json") === "json" &&
+                                      rule.condition.key
+                                    ) {
+                                      parts.push(rule.condition.key);
+                                    }
+                                  } else if (rule.condition.key) {
+                                    parts.push(rule.condition.key);
+                                  }
+                                  return parts.join(".");
+                                })();
+                                const summary = `${conditionPath} · ${rule.condition.operator}${
+                                  rule.condition.operator !== "exists" &&
+                                  rule.condition.operator !== "notExists" &&
+                                  rule.condition.value
+                                    ? ` · ${rule.condition.value}`
+                                    : ""
+                                }`;
+                                const draggedRuleIndex = draggingRuleId
+                                  ? dynamicRules.findIndex((r) => r.id === draggingRuleId)
+                                  : -1;
+                                const showInsertBefore =
+                                  draggingRuleId != null &&
+                                  ruleDropIndex === ruleIndex &&
+                                  ruleDropIndex !== draggedRuleIndex &&
+                                  ruleDropIndex !== draggedRuleIndex + 1;
+                                return (
+                                  <div key={rule.id}>
+                                    {showInsertBefore && (
+                                      <div
+                                        aria-hidden
+                                        className="mb-1 h-0.5 rounded-full bg-orange-500"
+                                      />
+                                    )}
+                                    <div
+                                      data-dynamic-rule={rule.id}
+                                      className={cn(
+                                        "rounded border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950",
+                                        draggingRuleId === rule.id && "opacity-40",
+                                      )}
+                                    >
+                                      <div className="flex items-center gap-1.5 px-2 py-1.5">
+                                        <button
+                                          type="button"
+                                          title="Arraste para reordenar"
+                                          aria-label="Arrastar condição"
+                                          onPointerDown={(e) =>
+                                            beginDynamicRuleDrag(e, rule.id)
+                                          }
+                                          className="inline-flex h-5 w-4 shrink-0 cursor-grab touch-none items-center justify-center text-zinc-400 active:cursor-grabbing"
+                                        >
+                                          <svg
+                                            aria-hidden
+                                            viewBox="0 0 10 16"
+                                            className="h-3.5 w-2.5"
+                                            fill="currentColor"
+                                          >
+                                            <circle cx="3" cy="3" r="1.2" />
+                                            <circle cx="7" cy="3" r="1.2" />
+                                            <circle cx="3" cy="8" r="1.2" />
+                                            <circle cx="7" cy="8" r="1.2" />
+                                            <circle cx="3" cy="13" r="1.2" />
+                                            <circle cx="7" cy="13" r="1.2" />
+                                          </svg>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="inline-flex min-w-0 flex-1 items-center gap-2 text-left text-[11px] text-zinc-700 dark:text-zinc-200"
+                                          onClick={() =>
+                                            setExpandedDynamicRuleIds((prev) =>
+                                              prev.includes(rule.id)
+                                                ? prev.filter((id) => id !== rule.id)
+                                                : [...prev, rule.id],
+                                            )
+                                          }
+                                        >
+                                          <span className="shrink-0">
+                                            {expanded ? "▼" : "▶"}
+                                          </span>
+                                          <span className="min-w-0 truncate">
+                                            {summary}
+                                          </span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="text-[10px] text-red-500"
+                                          onClick={() =>
+                                            setDynamicRules((prev) =>
+                                              prev.filter((r) => r.id !== rule.id),
+                                            )
+                                          }
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    {expanded && (
+                                      <div className="space-y-2 border-t border-zinc-100 px-2 py-2 dark:border-zinc-900">
+                                        <div className="grid gap-2 sm:grid-cols-3 sm:items-start">
+                                          <div className="flex flex-col gap-2">
+                                            <label className="flex flex-col gap-1">
+                                              <span className="text-[10px] text-zinc-500">
+                                                Fonte
+                                              </span>
+                                              <select
+                                                className="h-7 rounded border border-zinc-300 bg-white px-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                                value={rule.condition.source}
+                                                onChange={(e) => {
+                                                  const source = e.target
+                                                    .value as MockMatchSource;
+                                                  setDynamicRules((prev) =>
+                                                    prev.map((r) =>
+                                                      r.id === rule.id
+                                                        ? {
+                                                            ...r,
+                                                            condition: {
+                                                              ...r.condition,
+                                                              source,
+                                                              key:
+                                                                source === "path"
+                                                                  ? pathParams[0] ?? ""
+                                                                  : r.condition.key,
+                                                              bodyKind:
+                                                                source === "body"
+                                                                  ? r.condition.bodyKind ??
+                                                                    "json"
+                                                                  : undefined,
+                                                            },
+                                                          }
+                                                        : r,
+                                                    ),
+                                                  );
+                                                }}
+                                              >
+                                                <option value="header">header</option>
+                                                <option value="query">query</option>
+                                                <option value="path">path</option>
+                                                <option value="body">body</option>
+                                              </select>
+                                            </label>
+
+                                            {(rule.condition.source === "header" ||
+                                              rule.condition.source === "query") && (
+                                              <label className="flex flex-col gap-1">
+                                                <span className="text-[10px] text-zinc-500">
+                                                  Chave
+                                                </span>
+                                                <input
+                                                  className="h-7 rounded border border-zinc-300 bg-white px-1.5 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                                  value={rule.condition.key ?? ""}
+                                                  onChange={(e) =>
+                                                    setDynamicRules((prev) =>
+                                                      prev.map((r) =>
+                                                        r.id === rule.id
+                                                          ? {
+                                                              ...r,
+                                                              condition: {
+                                                                ...r.condition,
+                                                                key: e.target.value,
+                                                              },
+                                                            }
+                                                          : r,
+                                                      ),
+                                                    )
+                                                  }
+                                                />
+                                              </label>
+                                            )}
+
+                                            {rule.condition.source === "path" && (
+                                              <label className="flex flex-col gap-1">
+                                                <span className="text-[10px] text-zinc-500">
+                                                  Path param
+                                                </span>
+                                                {pathParams.length === 0 ? (
+                                                  <span className="text-[11px] text-amber-600">
+                                                    Este path não tem parâmetros (:id).
+                                                    Converta um segmento antes.
+                                                  </span>
+                                                ) : (
+                                                  <select
+                                                    className="h-7 rounded border border-zinc-300 bg-white px-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                                    value={rule.condition.key ?? ""}
+                                                    onChange={(e) =>
+                                                      setDynamicRules((prev) =>
+                                                        prev.map((r) =>
+                                                          r.id === rule.id
+                                                            ? {
+                                                                ...r,
+                                                                condition: {
+                                                                  ...r.condition,
+                                                                  key: e.target.value,
+                                                                },
+                                                              }
+                                                            : r,
+                                                        ),
+                                                      )
+                                                    }
+                                                  >
+                                                    {pathParams.map((name) => (
+                                                      <option key={name} value={name}>
+                                                        :{name}
+                                                      </option>
+                                                    ))}
+                                                  </select>
+                                                )}
+                                              </label>
+                                            )}
+
+                                            {rule.condition.source === "body" && (
+                                              <>
+                                                <label className="flex flex-col gap-1">
+                                                  <span className="text-[10px] text-zinc-500">
+                                                    Tipo do body
+                                                  </span>
+                                                  <select
+                                                    className="h-7 rounded border border-zinc-300 bg-white px-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                                    value={
+                                                      rule.condition.bodyKind ?? "json"
+                                                    }
+                                                    onChange={(e) =>
+                                                      setDynamicRules((prev) =>
+                                                        prev.map((r) =>
+                                                          r.id === rule.id
+                                                            ? {
+                                                                ...r,
+                                                                condition: {
+                                                                  ...r.condition,
+                                                                  bodyKind: e.target
+                                                                    .value as MockBodyKind,
+                                                                },
+                                                              }
+                                                            : r,
+                                                        ),
+                                                      )
+                                                    }
+                                                  >
+                                                    <option value="json">json</option>
+                                                    <option value="raw">raw</option>
+                                                  </select>
+                                                </label>
+                                                {(rule.condition.bodyKind ?? "json") ===
+                                                  "json" && (
+                                                  <label className="flex flex-col gap-1">
+                                                    <span className="text-[10px] text-zinc-500">
+                                                      Campo (dot-path)
+                                                    </span>
+                                                    <input
+                                                      placeholder="user.id"
+                                                      className="h-7 rounded border border-zinc-300 bg-white px-1.5 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                                      value={rule.condition.key ?? ""}
+                                                      onChange={(e) =>
+                                                        setDynamicRules((prev) =>
+                                                          prev.map((r) =>
+                                                            r.id === rule.id
+                                                              ? {
+                                                                  ...r,
+                                                                  condition: {
+                                                                    ...r.condition,
+                                                                    key: e.target.value,
+                                                                  },
+                                                                }
+                                                              : r,
+                                                          ),
+                                                        )
+                                                      }
+                                                    />
+                                                  </label>
+                                                )}
+                                              </>
+                                            )}
+                                          </div>
+
+                                          <label className="flex flex-col gap-1">
+                                            <span className="text-[10px] text-zinc-500">
+                                              Operador
+                                            </span>
+                                            <select
+                                              className="h-7 rounded border border-zinc-300 bg-white px-1.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                              value={rule.condition.operator}
+                                              onChange={(e) => {
+                                                const operator = e.target
+                                                  .value as MockOperator;
+                                                setDynamicRules((prev) =>
+                                                  prev.map((r) =>
+                                                    r.id === rule.id
+                                                      ? {
+                                                          ...r,
+                                                          condition: {
+                                                            ...r.condition,
+                                                            operator,
+                                                          },
+                                                        }
+                                                      : r,
+                                                  ),
+                                                );
+                                              }}
+                                            >
+                                              <option value="equals">equals</option>
+                                              <option value="notEquals">notEquals</option>
+                                              <option value="contains">contains</option>
+                                              <option value="notContains">notContains</option>
+                                              <option value="startsWith">startsWith</option>
+                                              <option value="endsWith">endsWith</option>
+                                              <option value="exists">exists</option>
+                                              <option value="notExists">notExists</option>
+                                            </select>
+                                          </label>
+                                          {rule.condition.operator !== "exists" &&
+                                            rule.condition.operator !== "notExists" && (
+                                              <label className="flex flex-col gap-1">
+                                                <span className="text-[10px] text-zinc-500">
+                                                  Valor
+                                                </span>
+                                                <input
+                                                  className="h-7 rounded border border-zinc-300 bg-white px-1.5 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                                  value={rule.condition.value ?? ""}
+                                                  onChange={(e) =>
+                                                    setDynamicRules((prev) =>
+                                                      prev.map((r) =>
+                                                        r.id === rule.id
+                                                          ? {
+                                                              ...r,
+                                                              condition: {
+                                                                ...r.condition,
+                                                                value: e.target.value,
+                                                              },
+                                                            }
+                                                          : r,
+                                                      ),
+                                                    )
+                                                  }
+                                                />
+                                              </label>
+                                            )}
+                                        </div>
+
+                                        <div className="rounded border border-dashed border-zinc-200 p-2 dark:border-zinc-800">
+                                          <span className="mb-1 block text-[10px] font-medium text-zinc-500">
+                                            Resposta se a condição for verdadeira
+                                          </span>
+                                          <div className="mb-2 flex flex-wrap gap-2">
+                                            <label className="flex items-center gap-1 text-[11px]">
+                                              <span className="text-zinc-500">Status</span>
+                                              <input
+                                                type="number"
+                                                min={100}
+                                                max={599}
+                                                className="h-6 w-16 rounded border border-zinc-300 bg-white px-1 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                                value={rule.status}
+                                                onChange={(e) =>
+                                                  setDynamicRules((prev) =>
+                                                    prev.map((r) =>
+                                                      r.id === rule.id
+                                                        ? {
+                                                            ...r,
+                                                            status:
+                                                              Number(e.target.value) ||
+                                                              200,
+                                                          }
+                                                        : r,
+                                                    ),
+                                                  )
+                                                }
+                                              />
+                                            </label>
+                                          </div>
+                                          <div className="grid gap-2 md:grid-cols-2">
+                                            <label className="flex flex-col gap-1">
+                                              <span className="text-[10px] text-zinc-500">
+                                                Body (JSON)
+                                              </span>
+                                              <textarea
+                                                rows={4}
+                                                className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                                value={JSON.stringify(
+                                                  rule.body ?? {},
+                                                  null,
+                                                  2,
+                                                )}
+                                                onChange={(e) => {
+                                                  try {
+                                                    const parsed = JSON.parse(
+                                                      e.target.value || "null",
+                                                    );
+                                                    setDynamicRules((prev) =>
+                                                      prev.map((r) =>
+                                                        r.id === rule.id
+                                                          ? { ...r, body: parsed }
+                                                          : r,
+                                                      ),
+                                                    );
+                                                  } catch {
+                                                    // keep typing invalid json until blur/save
+                                                  }
+                                                }}
+                                              />
+                                            </label>
+                                            <label className="flex flex-col gap-1">
+                                              <span className="text-[10px] text-zinc-500">
+                                                Cabeçalhos (JSON)
+                                              </span>
+                                              <textarea
+                                                rows={4}
+                                                className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
+                                                value={JSON.stringify(
+                                                  rule.headers ?? {},
+                                                  null,
+                                                  2,
+                                                )}
+                                                onChange={(e) => {
+                                                  try {
+                                                    const parsed = JSON.parse(
+                                                      e.target.value || "{}",
+                                                    ) as Record<string, string>;
+                                                    setDynamicRules((prev) =>
+                                                      prev.map((r) =>
+                                                        r.id === rule.id
+                                                          ? { ...r, headers: parsed }
+                                                          : r,
+                                                      ),
+                                                    );
+                                                  } catch {
+                                                    // ignore while typing
+                                                  }
+                                                }}
+                                              />
+                                            </label>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                  </div>
+                                );
+                              })}
+                              {draggingRuleId != null &&
+                                ruleDropIndex === dynamicRules.length &&
+                                ruleDropIndex !==
+                                  dynamicRules.findIndex(
+                                    (r) => r.id === draggingRuleId,
+                                  ) &&
+                                ruleDropIndex !==
+                                  dynamicRules.findIndex(
+                                    (r) => r.id === draggingRuleId,
+                                  ) +
+                                    1 && (
+                                  <div
+                                    aria-hidden
+                                    className="h-0.5 rounded-full bg-orange-500"
                                   />
-                                </label>
-                                <div className="flex flex-col gap-1">
+                                )}
+
+                              <div className="space-y-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+                                <p className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+                                  Fallback (sem condições ou quando nenhuma bater)
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                  <label className="flex items-center gap-1 text-[11px]">
+                                    <span className="text-zinc-500">Status</span>
+                                    <input
+                                      type="number"
+                                      min={100}
+                                      max={599}
+                                      className="h-6 w-16 rounded border border-zinc-300 bg-white px-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                      value={configStatus}
+                                      onChange={(e) => setConfigStatus(e.target.value)}
+                                    />
+                                  </label>
+                                </div>
+                                <div className="grid gap-2 md:grid-cols-2">
                                   <label className="flex flex-col gap-1">
                                     <span className="text-[11px] text-zinc-500">
-                                      Cabeçalhos (JSON)
+                                      Body (JSON)
                                     </span>
                                     <textarea
                                       rows={4}
                                       className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                                      value={configHeaders}
-                                      onChange={(e) => setConfigHeaders(e.target.value)}
+                                      value={configBody}
+                                      onChange={(e) => setConfigBody(e.target.value)}
                                     />
                                   </label>
-                                  <div>
-                                    <span className="mb-1 block text-[11px] text-zinc-500">
-                                      Cabeçalhos (tabela)
-                                    </span>
-                                    {renderKeyValueTable(
-                                      toStringRecord(safeParseJson(configHeaders || "{}")),
-                                    )}
+                                  <div className="flex flex-col gap-1">
+                                    <label className="flex flex-col gap-1">
+                                      <span className="text-[11px] text-zinc-500">
+                                        Cabeçalhos (JSON)
+                                      </span>
+                                      <textarea
+                                        rows={4}
+                                        className="w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                        value={configHeaders}
+                                        onChange={(e) => setConfigHeaders(e.target.value)}
+                                      />
+                                    </label>
+                                    <div>
+                                      <span className="mb-1 block text-[11px] text-zinc-500">
+                                        Cabeçalhos (tabela)
+                                      </span>
+                                      {renderKeyValueTable(
+                                        toStringRecord(
+                                          safeParseJson(configHeaders || "{}"),
+                                        ),
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               </div>
-                            </>
+                            </div>
                           )}
 
                           <div className="flex items-center justify-between gap-2">
                             <button
                               type="submit"
-                              className={cn(
-                                "inline-flex items-center rounded px-3 py-1 text-[11px] font-medium",
-                                configProxyModeType === null && apiHasProxy
-                                  ? "bg-zinc-200 text-zinc-600 hover:bg-zinc-300 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
-                                  : "bg-zinc-900 text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200",
-                              )}
+                              className="inline-flex items-center rounded bg-zinc-900 px-3 py-1 text-[11px] font-medium text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
                             >
-                              {configProxyModeType === null && apiHasProxy
-                                ? "Usar proxy da API (remover override)"
-                                : "Salvar configuração"}
+                              Salvar configuração
                             </button>
                             {configMessage && (
                               <span className="text-[11px] text-zinc-500">
@@ -2916,12 +3970,73 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         </section>
       </main>
 
-      {/* Wildcard merge confirmation modal */}
+      {/* Named path param modal */}
+      {paramNameModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
+          <div className="w-full max-w-sm rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              Nome do parâmetro
+            </h2>
+            <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+              O segmento será convertido em um path param nomeado (ex.:{" "}
+              <code className="font-mono">:id</code>).
+            </p>
+            <label className="mt-3 flex flex-col gap-1">
+              <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+                Nome
+              </span>
+              <input
+                autoFocus
+                type="text"
+                value={paramNameModal.paramName}
+                onChange={(e) =>
+                  setParamNameModal({
+                    ...paramNameModal,
+                    paramName: e.target.value,
+                    error: null,
+                  })
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void confirmParamNameModal();
+                  }
+                }}
+                className="h-8 rounded border border-zinc-300 bg-white px-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-950"
+                placeholder="id"
+              />
+            </label>
+            {paramNameModal.error && (
+              <p className="mt-2 text-[11px] text-red-600 dark:text-red-400">
+                {paramNameModal.error}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setParamNameModal(null)}
+                className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmParamNameModal()}
+                className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+              >
+                Continuar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Path param merge confirmation modal */}
       {wildcardModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
           <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
             <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-              Converter para coringa?
+              Converter para parâmetro?
             </h2>
             <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
               O segmento será convertido em{" "}
@@ -3455,7 +4570,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
             {importDetected?.format === "openapi" && (
               <div className="mb-2 rounded-md bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
                 Rotas OpenAPI sem example usarão body vazio. Parâmetros de path serão
-                convertidos para wildcards (*).
+                convertidos para params nomeados (:id).
               </div>
             )}
 
