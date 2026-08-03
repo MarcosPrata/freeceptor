@@ -126,6 +126,13 @@ async function readRequest(request: Request, context: RouteContext) {
       }
 
       body = { _type: "form-data", ...asObject };
+    } else if (isBinaryContentType(contentType)) {
+      // Avoid decoding binary as UTF-8 (corrupts bytes in the request log).
+      body = {
+        _type: "binary",
+        size: rawRequestBody.byteLength,
+        mimeType: contentType.split(";")[0]?.trim() || "application/octet-stream",
+      };
     } else {
       const text = await requestForBodyParsing.text();
       body = text || null;
@@ -201,7 +208,7 @@ async function readRequest(request: Request, context: RouteContext) {
         method,
         path: extractAppendedPath(url.pathname, serverNameFromPath, apiNameFromPath),
         headers,
-        body,
+        rawRequestBody,
         queryParams,
       });
 
@@ -389,7 +396,7 @@ async function proxyToClientRequest({
   method,
   path,
   headers,
-  body,
+  rawRequestBody,
   queryParams,
 }: {
   serverName: string;
@@ -398,7 +405,7 @@ async function proxyToClientRequest({
   method: string;
   path: string;
   headers: Record<string, string>;
-  body: unknown;
+  rawRequestBody: ArrayBuffer;
   queryParams: Record<string, string | string[]>;
 }): Promise<{
   status: number;
@@ -437,6 +444,10 @@ async function proxyToClientRequest({
 
   const fullPath = queryString ? `${path}?${queryString}` : path;
 
+  // Forward raw bytes (base64 over JSON WS) so multipart / urlencoded / binary
+  // survive intact. Agent recalculates Content-Length from the decoded buffer.
+  const hasBody =
+    shouldSendBody(method) && rawRequestBody.byteLength > 0;
   const requestId = generateRequestId();
   const requestMessage: RequestMessage = {
     type: "request",
@@ -445,10 +456,13 @@ async function proxyToClientRequest({
     serviceName,
     method,
     path: fullPath,
-    // Strip hop-by-hop / host / content-length: body may be re-serialized
-    // by the agent, so the original Content-Length would hang local HTTP.
+    // Strip hop-by-hop / host / content-length: body length is recomputed
+    // by the agent from the decoded bytes.
     headers: sanitizeProxyResponseHeaders(headers),
-    body,
+    body: hasBody
+      ? Buffer.from(rawRequestBody).toString("base64")
+      : null,
+    bodyEncoding: hasBody ? "base64" : undefined,
   };
 
   const sent = clientManager.sendToClient(serverName, clientId, requestMessage);
@@ -530,6 +544,23 @@ async function proxyRequest({
 
 function shouldSendBody(method: string): boolean {
   return !["GET", "HEAD"].includes(method.toUpperCase());
+}
+
+/** Content types whose payload must not be decoded as UTF-8 text for logging. */
+function isBinaryContentType(contentType: string): boolean {
+  const ct = contentType.toLowerCase();
+  if (!ct) return false;
+  if (ct.includes("application/octet-stream")) return true;
+  if (ct.includes("application/pdf")) return true;
+  if (ct.includes("application/zip")) return true;
+  if (ct.includes("application/gzip")) return true;
+  if (ct.startsWith("image/")) return true;
+  if (ct.startsWith("audio/")) return true;
+  if (ct.startsWith("video/")) return true;
+  if (ct.includes("application/protobuf")) return true;
+  if (ct.includes("application/x-protobuf")) return true;
+  if (ct.includes("application/grpc")) return true;
+  return false;
 }
 
 async function readResponseBody(response: Response): Promise<unknown> {

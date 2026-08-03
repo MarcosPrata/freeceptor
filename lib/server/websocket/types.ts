@@ -73,7 +73,14 @@ export type RequestMessage = {
   method: string;
   path: string;
   headers: Record<string, string>;
+  /**
+   * Request body. When `bodyEncoding` is `"base64"`, this is a base64 string of
+   * the raw bytes (preserves multipart, urlencoded, binary, exact JSON, etc.).
+   * Legacy clients may still receive parsed JSON/objects without encoding.
+   */
   body: unknown;
+  /** How to interpret `body`. Omit / undefined = legacy JSON/text payload. */
+  bodyEncoding?: "base64";
 };
 
 export type ResponseMessage = {
