@@ -365,6 +365,8 @@ function sanitizeProxyResponseHeaders(
     "upgrade",
     // Body may be re-encoded after WebSocket transport; let the runtime set length.
     "content-length",
+    // Original Host points at Freeceptor, not the local service / caller.
+    "host",
   ]);
 
   const cleaned: Record<string, string> = {};
@@ -443,7 +445,9 @@ async function proxyToClientRequest({
     serviceName,
     method,
     path: fullPath,
-    headers,
+    // Strip hop-by-hop / host / content-length: body may be re-serialized
+    // by the agent, so the original Content-Length would hang local HTTP.
+    headers: sanitizeProxyResponseHeaders(headers),
     body,
   };
 
