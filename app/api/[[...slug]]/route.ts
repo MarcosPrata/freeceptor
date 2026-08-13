@@ -16,7 +16,8 @@ import { clientManager } from "@/lib/server/websocket";
 import type { RequestMessage } from "@/lib/server/websocket";
 import { looksLikeSseRequest } from "@/lib/server/looks-like-sse";
 import { bindLiveStream, tapReadableStream } from "@/lib/server/live-streams";
-import { createMockSseStream, parseFakeSseQuery } from "@/lib/server/mock-sse";
+import { abortMockSseStream, createMockSseStream, parseFakeSseQuery } from "@/lib/server/mock-sse";
+import { onRequestClosed } from "@/lib/server/request-lifetime";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -312,7 +313,7 @@ async function readRequest(request: Request, context: RouteContext) {
   const mockFake = parseFakeSseQuery(queryParams);
   let mockSse = false;
 
-  if (wantsSse && !sseBody) {
+  if (wantsSse && !sseBody && !hasActiveProxy) {
     sseStreamId = generateRequestId();
     sseBody = createMockSseStream(sseStreamId, {
       fakeEnabled: mockFake.enabled,
@@ -392,6 +393,12 @@ async function readRequest(request: Request, context: RouteContext) {
       fakeEventsEnabled: mockSse ? mockFake.enabled : false,
       fakeEventsIntervalMs: mockSse ? mockFake.intervalMs : undefined,
     });
+    const streamId = sseStreamId;
+    const isMockStream = mockSse;
+    onRequestClosed(() => {
+      if (isMockStream) abortMockSseStream(streamId);
+      else clientManager.abortStream(streamId);
+    }, request);
   }
 
   if (sseBody) {
@@ -496,6 +503,7 @@ function sanitizeProxyResponseHeaders(
     "content-length",
     // Original Host points at Freeceptor, not the local service / caller.
     "host",
+    "x-freeceptor-lifetime",
   ]);
 
   const cleaned: Record<string, string> = {};
@@ -747,6 +755,7 @@ async function proxyRequest({
   proxyHeaders.delete("host");
   proxyHeaders.delete("content-length");
   proxyHeaders.delete("connection");
+  proxyHeaders.delete("x-freeceptor-lifetime");
 
   const proxiedResponse = await fetch(proxyUrl.toString(), {
     method: originalRequest.method,
@@ -804,12 +813,14 @@ async function proxyRequestStreaming({
   proxyHeaders.delete("host");
   proxyHeaders.delete("content-length");
   proxyHeaders.delete("connection");
+  proxyHeaders.delete("x-freeceptor-lifetime");
 
   const proxiedResponse = await fetch(proxyUrl.toString(), {
     method: originalRequest.method,
     headers: proxyHeaders,
     body: shouldSendBody(originalRequest.method) ? rawRequestBody : undefined,
     redirect: "manual",
+    signal: originalRequest.signal,
   });
 
   if (!proxiedResponse.body) {

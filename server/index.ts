@@ -2,6 +2,7 @@ import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
 import { createWebSocketServer, closeWebSocketServer } from "../lib/server/websocket/index";
+import { beginNodeRequest } from "../lib/server/request-lifetime";
 import { version } from "../package.json";
 
 const dev = process.env.NODE_ENV !== "production";
@@ -21,6 +22,7 @@ async function main() {
   await app.prepare();
 
   const server = createServer((req, res) => {
+    beginNodeRequest(req, res);
     const parsedUrl = parse(req.url || "", true);
     handle(req, res, parsedUrl);
   });

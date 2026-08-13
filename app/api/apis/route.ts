@@ -4,6 +4,7 @@ import {
   setApiConfig,
   setApiOrder,
   deleteApiAndAllData,
+  renameApiAndAllData,
   type ApiConfig,
 } from "@/lib/server/request-log";
 import { getServerFromCookie } from "@/lib/server/server-session";
@@ -79,6 +80,33 @@ export async function PUT(request: Request) {
 
   const apis = await setApiOrder(serverName, order);
   return NextResponse.json(apis);
+}
+
+export async function PATCH(request: Request) {
+  const serverName = getServerFromCookie(request);
+  if (!serverName) return unauthorized();
+
+  const body = await request.json().catch(() => null);
+  const { apiName, newApiName } = (body ?? {}) as {
+    apiName?: string;
+    newApiName?: string;
+  };
+
+  if (!apiName || !newApiName?.trim()) {
+    return NextResponse.json(
+      { error: "apiName e newApiName são obrigatórios." },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const saved = await renameApiAndAllData(serverName, apiName, newApiName);
+    return NextResponse.json(saved);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Falha ao renomear.";
+    const status = message.includes("Já existe") ? 409 : 400;
+    return NextResponse.json({ error: message }, { status });
+  }
 }
 
 export async function DELETE(request: Request) {

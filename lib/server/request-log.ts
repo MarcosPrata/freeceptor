@@ -939,6 +939,48 @@ export async function deleteApiAndAllData(
   await notifyChange(serverName, normalizedApi);
 }
 
+export async function renameApiAndAllData(
+  serverName: string,
+  fromApiName: string,
+  toApiName: string,
+): Promise<ApiConfig> {
+  const from = normalizeApiName(fromApiName);
+  const rawTo = toApiName.trim();
+  if (!rawTo) throw new Error("nome da API inválido.");
+  const to = normalizeApiName(rawTo);
+  if (from === to) {
+    const current = await getApiConfig(serverName, from);
+    if (!current) throw new Error("API não encontrada.");
+    return current;
+  }
+
+  const [apiColl, routeColl, logColl] = await Promise.all([
+    apiConfigsCollection(),
+    routeConfigsCollection(),
+    logsCollection(),
+  ]);
+
+  const existing = await apiColl.findOne({ serverName, apiName: from });
+  if (!existing) throw new Error("API não encontrada.");
+  const clash = await apiColl.findOne({ serverName, apiName: to });
+  if (clash) throw new Error("Já existe uma API com esse nome.");
+
+  await apiColl.updateOne(
+    { serverName, apiName: from },
+    { $set: { apiName: to } },
+  );
+  await Promise.all([
+    routeColl.updateMany({ serverName, apiName: from }, { $set: { apiName: to } }),
+    logColl.updateMany({ serverName, apiName: from }, { $set: { apiName: to } }),
+  ]);
+  await notifyChange(serverName, from);
+  await notifyChange(serverName, to);
+
+  const renamed = await getApiConfig(serverName, to);
+  if (!renamed) throw new Error("Falha ao renomear a API.");
+  return renamed;
+}
+
 // --- Proxy resolution with hierarchy: route > api > none ---
 
 export async function resolveProxyConfig(

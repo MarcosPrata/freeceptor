@@ -18,7 +18,7 @@ type PendingStream = {
   clientId: string;
   clientKey: string;
   started: boolean;
-  controller: ReadableStreamDefaultController<Uint8Array>;
+  writer: WritableStreamDefaultWriter<Uint8Array>;
   body: ReadableStream<Uint8Array>;
   startTimeout: NodeJS.Timeout;
   resolveStart: (value: {
@@ -257,15 +257,8 @@ class ClientManager {
     headers: Record<string, string>;
     body: ReadableStream<Uint8Array>;
   }> {
-    let controller!: ReadableStreamDefaultController<Uint8Array>;
-    const body = new ReadableStream<Uint8Array>({
-      start(c) {
-        controller = c;
-      },
-      cancel: () => {
-        this.abortStream(requestId);
-      },
-    });
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
 
     return new Promise((resolve, reject) => {
       const startTimeout = setTimeout(() => {
@@ -276,11 +269,7 @@ class ClientManager {
           type: "request_abort",
           requestId,
         });
-        try {
-          controller.error(new Error("Request timeout"));
-        } catch {
-          // already closed
-        }
+        void writer.abort().catch(() => undefined);
         reject(new Error("Request timeout"));
       }, timeoutMs);
 
@@ -290,8 +279,8 @@ class ClientManager {
         clientId: client.clientId,
         clientKey: this.buildClientKey(client.serverName, client.clientId),
         started: false,
-        controller,
-        body,
+        writer,
+        body: readable,
         startTimeout,
         resolveStart: resolve,
         rejectStart: reject,
@@ -319,7 +308,9 @@ class ClientManager {
     try {
       const bytes = Buffer.from(message.data, "base64");
       appendLiveStreamChunk(message.requestId, bytes);
-      pending.controller.enqueue(bytes);
+      void pending.writer.write(bytes).catch(() => {
+        this.abortStream(message.requestId);
+      });
       return true;
     } catch {
       return false;
@@ -335,24 +326,24 @@ class ClientManager {
 
     if (!pending.started) {
       pending.rejectStart(new Error(message.error || "Stream ended before headers"));
+      void pending.writer.abort().catch(() => undefined);
       return true;
     }
 
-    try {
-      if (message.error) {
-        pending.controller.error(new Error(message.error));
-      } else {
-        pending.controller.close();
-      }
-    } catch {
-      // already closed (caller disconnected)
+    if (message.error) {
+      void pending.writer.abort().catch(() => undefined);
+    } else {
+      void pending.writer.close().catch(() => undefined);
     }
     return true;
   }
 
   abortStream(requestId: string): void {
     const pending = this.pendingStreams.get(requestId);
-    if (!pending) return;
+    if (!pending) {
+      closeLiveStream(requestId);
+      return;
+    }
     this.pendingStreams.delete(requestId);
     clearTimeout(pending.startTimeout);
     closeLiveStream(requestId);
@@ -362,13 +353,8 @@ class ClientManager {
     });
     if (!pending.started) {
       pending.rejectStart(new Error("Aborted"));
-      return;
     }
-    try {
-      pending.controller.close();
-    } catch {
-      // already closed
-    }
+    void pending.writer.abort().catch(() => undefined);
   }
 
   abortStreamsForClient(serverName: string, clientId: string): void {

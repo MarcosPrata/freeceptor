@@ -2715,7 +2715,10 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     useState<DisplayBodyMode>("bulk");
   const [displayJsonCollapsed, setDisplayJsonCollapsed] = useState(true);
   const [displaySettingsSaving, setDisplaySettingsSaving] = useState(false);
+  const [liveSectionCollapsed, setLiveSectionCollapsed] = useState(false);
   const [apiConfigOpen, setApiConfigOpen] = useState(false);
+  const [apiEditName, setApiEditName] = useState("");
+  const [apiDeleteConfirm, setApiDeleteConfirm] = useState("");
   const [apiProxyModeType, setApiProxyModeType] = useState<ProxyModeType>("disabled");
   const [apiProxyUrl, setApiProxyUrl] = useState("");
   const [apiProxyClientId, setApiProxyClientId] = useState("");
@@ -3393,16 +3396,16 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     }
   }
 
-  async function confirmDeleteApi() {
-    if (!deleteApiName) return;
+  async function confirmDeleteApi(name = deleteApiName) {
+    if (!name) return;
     try {
-      await fetch(`/api/apis?apiName=${encodeURIComponent(deleteApiName)}`, {
+      await fetch(`/api/apis?apiName=${encodeURIComponent(name)}`, {
         method: "DELETE",
       });
       setDeleteApiName(null);
-      const wasSelected = selectedApi === deleteApiName;
+      const wasSelected = selectedApi === name;
       setUnreadByApi((prev) => {
-        const key = deleteApiName.toLowerCase();
+        const key = name.toLowerCase();
         if (!(key in prev)) return prev;
         const next = { ...prev };
         delete next[key];
@@ -3851,6 +3854,8 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   async function openApiConfig() {
     setApiConfigOpen(true);
     setApiConfigMessage(null);
+    setApiEditName(selectedApi);
+    setApiDeleteConfirm("");
     setApiProxyModeType("disabled");
     setApiProxyUrl("");
     setApiProxyClientId("");
@@ -4719,11 +4724,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
             <button
               type="button"
               onClick={openApiConfig}
-              title={
-                apiClientProxyInactive
-                  ? "Proxy configurado, mas o cliente está offline"
-                  : undefined
-              }
+              title="Configurar API"
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
                 apiClientProxyInactive
@@ -4735,11 +4736,19 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                       : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
               )}
             >
-              {apiClientProxyInactive
-                ? "Proxy da API (offline)"
-                : apiHasProxy
-                  ? "Proxy da API ativo"
-                  : "Configurar proxy da API"}
+              Configurar API
+              {apiHasProxy ? (
+                <span
+                  className={cn(
+                    "inline-block h-1.5 w-1.5 rounded-full",
+                    apiClientProxyInactive
+                      ? "bg-zinc-400"
+                      : apiHasClientProxy
+                        ? "bg-white dark:bg-zinc-950"
+                        : "bg-white dark:bg-zinc-950",
+                  )}
+                />
+              ) : null}
             </button>
           </div>
         </div>
@@ -4936,17 +4945,39 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
               <div className="space-y-3 p-3">
                 {openLiveStreams.length > 0 && (
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2 px-0.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-400">
+                    <button
+                      type="button"
+                      onClick={() => setLiveSectionCollapsed((prev) => !prev)}
+                      className="flex w-full items-center gap-2 px-0.5 text-left text-[10px] font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-400"
+                    >
+                      <svg
+                        viewBox="0 0 16 16"
+                        className={cn(
+                          "h-3 w-3 shrink-0 transition-transform",
+                          liveSectionCollapsed ? "-rotate-90" : "rotate-0",
+                        )}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden
+                      >
+                        <path d="M4 6l4 4 4-4" />
+                      </svg>
                       <span className="relative flex h-1.5 w-1.5">
                         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75" />
                         <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cyan-500" />
                       </span>
                       Ligações ao vivo
                       <span className="font-normal normal-case tracking-normal text-zinc-500">
-                        SSE / streams HTTP. Expandir para ver os frames.
+                        {openLiveStreams.length}
+                        {liveSectionCollapsed
+                          ? " ocultas"
+                          : " · SSE / streams HTTP. Expandir para ver os frames."}
                       </span>
-                    </div>
-                    {openLiveStreams.map((stream) => (
+                    </button>
+                    {!liveSectionCollapsed && openLiveStreams.map((stream) => (
                       <div
                         key={stream.requestId}
                         className="rounded-md border border-cyan-300 bg-white shadow-sm dark:border-cyan-900/70 dark:bg-zinc-950"
@@ -7185,35 +7216,41 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
         </div>
       )}
 
-      {/* API proxy config modal */}
+      {/* API settings modal */}
       {apiConfigOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4">
-          <div className="w-full max-w-lg rounded-lg bg-white p-4 shadow-lg dark:bg-zinc-950">
-            <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-5 shadow-lg dark:bg-zinc-950">
+            <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                  Proxy da API &quot;{selectedApi}&quot;
+                  Configurar API
                 </h2>
-                <p className="text-xs text-zinc-600 dark:text-zinc-400">
-                  Configurado aqui, aplica-se a todas as rotas desta API. Rotas com proxy próprio têm prioridade.
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  API:{" "}
+                  <code className="font-mono text-zinc-700 dark:text-zinc-300">
+                    {selectedApi}
+                  </code>
                 </p>
               </div>
               <button
                 type="button"
-                className="rounded-full p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-900"
+                aria-label="Fechar"
                 onClick={() => setApiConfigOpen(false)}
+                className="flex h-7 w-7 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-zinc-200"
               >
                 ✕
               </button>
             </div>
 
             <form
-              className="flex flex-col gap-3"
+              className="mt-5 flex flex-col gap-4"
               onSubmit={async (e) => {
                 e.preventDefault();
                 setApiConfigMessage(null);
                 setApiConfigSaving(true);
                 try {
+                  const nextName = apiEditName.trim();
+                  if (!nextName) throw new Error("Informe o nome da API.");
                   if (apiProxyModeType === "url" && !apiProxyUrl.trim()) {
                     throw new Error("Informe a URL do proxy.");
                   }
@@ -7222,11 +7259,32 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                     if (!apiProxyServiceName) throw new Error("Selecione um serviço.");
                   }
 
+                  let apiName = selectedApi;
+                  if (nextName.toLowerCase() !== selectedApi.toLowerCase()) {
+                    const renameRes = await fetch("/api/apis", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        apiName: selectedApi,
+                        newApiName: nextName,
+                      }),
+                    });
+                    const renameData = (await renameRes.json().catch(() => null)) as {
+                      error?: string;
+                      apiName?: string;
+                    } | null;
+                    if (!renameRes.ok) {
+                      throw new Error(renameData?.error ?? "Falha ao renomear a API.");
+                    }
+                    apiName = renameData?.apiName ?? nextName.toLowerCase();
+                    selectApi(apiName);
+                  }
+
                   const res = await fetch("/api/apis", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                      apiName: selectedApi,
+                      apiName,
                       proxyMode: apiProxyModeType === "url",
                       proxyUrl: apiProxyModeType === "url" ? apiProxyUrl.trim() : "",
                       proxyToClient: apiProxyModeType === "client",
@@ -7251,134 +7309,221 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                 }
               }}
             >
-              <div>
-                <span className="mb-1 block text-[11px] font-medium text-zinc-500">
-                  Modo de proxy
-                </span>
-                <div className="flex flex-wrap gap-3">
-                  <label className="inline-flex items-center gap-1.5 text-[11px]">
-                    <input
-                      type="radio"
-                      name="apiProxyMode"
-                      className="h-3.5 w-3.5"
-                      checked={apiProxyModeType === "disabled"}
-                      onChange={() => setApiProxyModeType("disabled")}
-                    />
-                    <span>Desabilitado</span>
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 text-[11px]">
-                    <input
-                      type="radio"
-                      name="apiProxyMode"
-                      className="h-3.5 w-3.5"
-                      checked={apiProxyModeType === "url"}
-                      onChange={() => setApiProxyModeType("url")}
-                    />
-                    <span>Proxy para URL</span>
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 text-[11px]">
-                    <input
-                      type="radio"
-                      name="apiProxyMode"
-                      className="h-3.5 w-3.5"
-                      checked={apiProxyModeType === "client"}
-                      onChange={() => setApiProxyModeType("client")}
-                    />
-                    <span>Proxy para cliente conectado</span>
-                  </label>
-                </div>
-              </div>
+              <section className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                <h3 className="text-xs font-semibold text-zinc-900 dark:text-zinc-50">
+                  Identidade
+                </h3>
+                <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  Nome da API na barra de tabs e no path{" "}
+                  <code className="font-mono">/api/{currentServerName}/…</code>.
+                </p>
+                <label className="mt-3 flex flex-col gap-1">
+                  <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+                    Nome
+                  </span>
+                  <input
+                    type="text"
+                    value={apiEditName}
+                    onChange={(e) => setApiEditName(e.target.value)}
+                    className="h-8 rounded border border-zinc-300 bg-white px-2 font-mono text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                    placeholder="nome-da-api"
+                  />
+                </label>
+              </section>
 
-              {apiProxyModeType === "url" && (
-                <div className="rounded border border-violet-200 bg-violet-50 p-2 dark:border-violet-900 dark:bg-violet-950/30">
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300">
-                      URL de destino
-                    </span>
-                    <input
-                      type="url"
-                      placeholder="https://api.exemplo.com"
-                      className="h-7 rounded border border-zinc-300 bg-white px-2 font-mono text-[11px] text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                      value={apiProxyUrl}
-                      onChange={(e) => setApiProxyUrl(e.target.value)}
-                    />
-                  </label>
-                </div>
-              )}
+              <section className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                <h3 className="text-xs font-semibold text-zinc-900 dark:text-zinc-50">
+                  Proxy
+                </h3>
+                <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  Aplica-se a todas as rotas desta API. Uma rota com override próprio tem prioridade.
+                </p>
 
-              {apiProxyModeType === "client" && (
-                <div className="rounded border border-blue-200 bg-blue-50 p-2 dark:border-blue-900 dark:bg-blue-950/30">
-                  <div className="mb-1 flex items-center gap-1">
-                    <span className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                <p className="mt-3 text-[11px] font-medium text-zinc-700 dark:text-zinc-300">
+                  Modo
+                </p>
+                <div
+                  role="group"
+                  aria-label="Modo de proxy"
+                  className="mt-2 grid grid-cols-3 gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-0.5 dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  {(
+                    [
+                      ["disabled", "Desligado", "border-amber-400/70 bg-amber-100 text-amber-800 dark:border-amber-500/50 dark:bg-amber-950/60 dark:text-amber-300"],
+                      ["url", "URL", "border-violet-400/70 bg-violet-100 text-violet-800 dark:border-violet-500/50 dark:bg-violet-950/60 dark:text-violet-300"],
+                      ["client", "Cliente", "border-blue-400/70 bg-blue-100 text-blue-800 dark:border-blue-500/50 dark:bg-blue-950/60 dark:text-blue-300"],
+                    ] as const
+                  ).map(([value, label, activeClass]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={apiProxyModeType === value}
+                      onClick={() => setApiProxyModeType(value)}
+                      className={cn(
+                        "inline-flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition-colors",
+                        apiProxyModeType === value
+                          ? activeClass
+                          : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 rounded-full",
+                          value === "disabled" && "bg-amber-500",
+                          value === "url" && "bg-violet-500",
+                          value === "client" && "bg-blue-500",
+                        )}
+                      />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {apiProxyModeType === "url" && (
+                  <div className="mt-3 rounded border border-violet-200 bg-violet-50 p-2 dark:border-violet-900/60 dark:bg-violet-950/30">
+                    <label className="flex flex-col gap-1">
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-violet-700 dark:text-violet-300">
+                        <StreamSourcePill source="url" />
+                        URL de destino
+                      </span>
+                      <input
+                        type="url"
+                        placeholder="https://api.exemplo.com"
+                        className="h-8 rounded border border-violet-300 bg-white px-2 font-mono text-xs text-zinc-800 dark:border-violet-900 dark:bg-zinc-950 dark:text-zinc-100"
+                        value={apiProxyUrl}
+                        onChange={(e) => setApiProxyUrl(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {apiProxyModeType === "client" && (
+                  <div className="mt-3 rounded border border-blue-200 bg-blue-50 p-2 dark:border-blue-900/60 dark:bg-blue-950/30">
+                    <div className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                      <StreamSourcePill source="client" />
                       Cliente conectado
+                    </div>
+                    {connectedClients.filter((c) => c.status === "online").length === 0 ? (
+                      <div className="rounded bg-amber-100 px-2 py-1.5 text-[11px] text-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+                        Nenhum cliente online.
+                      </div>
+                    ) : (
+                      <div className="grid gap-2">
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] font-medium text-blue-700 dark:text-blue-400">
+                            Cliente
+                          </span>
+                          <select
+                            className="h-8 rounded border border-blue-300 bg-white px-2 text-xs dark:border-blue-900 dark:bg-zinc-950"
+                            value={apiProxyClientId}
+                            onChange={(e) => {
+                              setApiProxyClientId(e.target.value);
+                              setApiProxyServiceName("");
+                            }}
+                          >
+                            <option value="">Selecione um cliente</option>
+                            {connectedClients
+                              .filter((c) => c.status === "online")
+                              .map((client) => (
+                                <option key={client.clientId} value={client.clientId}>
+                                  {client.clientName}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] font-medium text-blue-700 dark:text-blue-400">
+                            Serviço
+                          </span>
+                          <select
+                            className="h-8 rounded border border-blue-300 bg-white px-2 text-xs dark:border-blue-900 dark:bg-zinc-950"
+                            value={apiProxyServiceName}
+                            onChange={(e) => setApiProxyServiceName(e.target.value)}
+                            disabled={!apiProxyClientId}
+                          >
+                            <option value="">Selecione um serviço</option>
+                            {connectedClients
+                              .find((c) => c.clientId === apiProxyClientId)
+                              ?.localServices.map((service) => (
+                                <option key={service.name} value={service.name}>
+                                  {service.name} ({service.host}:{service.port})
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {apiProxyModeType === "disabled" && (
+                  <div className="mt-3 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                    <span className="inline-flex items-center gap-1.5">
+                      <StreamSourcePill source="mock" />
+                      Sem proxy: as rotas respondem com o body mock.
                     </span>
                   </div>
-                  {connectedClients.filter((c) => c.status === "online").length === 0 ? (
-                    <div className="rounded bg-amber-100 px-2 py-1.5 text-[11px] text-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
-                      Nenhum cliente online.
-                    </div>
-                  ) : (
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[10px] text-blue-600 dark:text-blue-400">
-                          Cliente
-                        </span>
-                        <select
-                          className="h-7 rounded border border-zinc-300 bg-white px-2 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                          value={apiProxyClientId}
-                          onChange={(e) => {
-                            setApiProxyClientId(e.target.value);
-                            setApiProxyServiceName("");
-                          }}
-                        >
-                          <option value="">Selecione um cliente</option>
-                          {connectedClients
-                            .filter((c) => c.status === "online")
-                            .map((client) => (
-                              <option key={client.clientId} value={client.clientId}>
-                                {client.clientName}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[10px] text-blue-600 dark:text-blue-400">
-                          Serviço
-                        </span>
-                        <select
-                          className="h-7 rounded border border-zinc-300 bg-white px-2 text-[11px] dark:border-zinc-700 dark:bg-zinc-950"
-                          value={apiProxyServiceName}
-                          onChange={(e) => setApiProxyServiceName(e.target.value)}
-                          disabled={!apiProxyClientId}
-                        >
-                          <option value="">Selecione um serviço</option>
-                          {connectedClients
-                            .find((c) => c.clientId === apiProxyClientId)
-                            ?.localServices.map((service) => (
-                              <option key={service.name} value={service.name}>
-                                {service.name} ({service.host}:{service.port})
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                    </div>
+                )}
+              </section>
+
+              {apiConfigMessage && (
+                <p
+                  className={cn(
+                    "text-[11px]",
+                    apiConfigMessage.startsWith("Erro")
+                      ? "text-red-600 dark:text-red-400"
+                      : "text-emerald-600 dark:text-emerald-400",
                   )}
-                </div>
+                >
+                  {apiConfigMessage}
+                </p>
               )}
 
-              <div className="flex items-center justify-between gap-2">
-                <button
-                  type="submit"
-                  disabled={apiConfigSaving}
-                  className="inline-flex items-center rounded bg-zinc-900 px-3 py-1 text-[11px] font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-                >
-                  {apiConfigSaving ? "Salvando..." : "Salvar"}
-                </button>
-                {apiConfigMessage && (
-                  <span className="text-[11px] text-zinc-500">{apiConfigMessage}</span>
-                )}
-              </div>
+              <button
+                type="submit"
+                disabled={apiConfigSaving}
+                className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+              >
+                {apiConfigSaving ? "Salvando..." : "Salvar alterações"}
+              </button>
             </form>
+
+            <section className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/60 dark:bg-red-950/30">
+              <h3 className="text-xs font-semibold text-red-700 dark:text-red-300">
+                Zona de perigo
+              </h3>
+              <p className="mt-1 text-[11px] text-red-700/90 dark:text-red-300/90">
+                Deletar a API remove permanentemente as rotas, requisições e o
+                proxy associados. Esta ação não pode ser desfeita.
+              </p>
+              <label className="mt-3 flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-red-700 dark:text-red-300">
+                  Digite{" "}
+                  <code className="font-mono">{selectedApi}</code> para confirmar
+                </span>
+                <input
+                  type="text"
+                  value={apiDeleteConfirm}
+                  onChange={(e) => setApiDeleteConfirm(e.target.value)}
+                  className="h-8 rounded border border-red-300 bg-white px-2 font-mono text-xs text-zinc-800 dark:border-red-900 dark:bg-zinc-950 dark:text-zinc-100"
+                  placeholder={selectedApi}
+                />
+              </label>
+              <button
+                type="button"
+                disabled={
+                  apiDeleteConfirm.trim().toLowerCase() !==
+                  selectedApi.trim().toLowerCase()
+                }
+                onClick={() => {
+                  setApiConfigOpen(false);
+                  void confirmDeleteApi(selectedApi);
+                }}
+                className="mt-3 rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-60 dark:bg-red-700 dark:hover:bg-red-600"
+              >
+                Deletar API
+              </button>
+            </section>
           </div>
         </div>
       )}

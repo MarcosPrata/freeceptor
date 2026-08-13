@@ -12,7 +12,9 @@ const HEARTBEAT_MS = 15_000;
 
 type MockPusher = {
   enqueue: (bytes: Uint8Array) => boolean;
+  closeController: () => void;
   fakeTimer?: ReturnType<typeof setInterval>;
+  heartbeatTimer?: ReturnType<typeof setInterval>;
   fakeEnabled: boolean;
   fakeIntervalMs: number;
   serverName: string;
@@ -61,6 +63,22 @@ export function parseFakeSseQuery(
 
 export function hasMockSsePusher(requestId: string): boolean {
   return pushers.has(requestId);
+}
+
+export function abortMockSseStream(requestId: string): void {
+  const pusher = pushers.get(requestId);
+  if (!pusher) {
+    closeLiveStream(requestId);
+    return;
+  }
+  stopFakeTimer(pusher);
+  if (pusher.heartbeatTimer) {
+    clearInterval(pusher.heartbeatTimer);
+    pusher.heartbeatTimer = undefined;
+  }
+  pushers.delete(requestId);
+  pusher.closeController();
+  closeLiveStream(requestId);
 }
 
 export function encodeSseFrame(event: string, data: string): Uint8Array {
@@ -178,7 +196,6 @@ export function createMockSseStream(
     path: string;
   },
 ): ReadableStream<Uint8Array> {
-  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   let closed = false;
   const fakeIntervalMs = clampFakeIntervalMs(
     opts.fakeIntervalMs ?? DEFAULT_FAKE_INTERVAL_MS,
@@ -205,18 +222,22 @@ export function createMockSseStream(
             return false;
           }
         },
+        closeController: () => {
+          closed = true;
+          try {
+            controller.close();
+          } catch {
+            // already closed
+          }
+        },
       };
       pushers.set(requestId, pusher);
 
       enqueueFrame(pusher, requestId, beat());
-      heartbeatTimer = setInterval(() => {
+      pusher.heartbeatTimer = setInterval(() => {
         if (closed) return;
         if (!enqueueFrame(pusher, requestId, beat())) {
-          closed = true;
-          if (heartbeatTimer) clearInterval(heartbeatTimer);
-          stopFakeTimer(pusher);
-          pushers.delete(requestId);
-          closeLiveStream(requestId);
+          abortMockSseStream(requestId);
         }
       }, HEARTBEAT_MS);
 
@@ -229,12 +250,7 @@ export function createMockSseStream(
       }
     },
     cancel() {
-      closed = true;
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      const pusher = pushers.get(requestId);
-      if (pusher) stopFakeTimer(pusher);
-      pushers.delete(requestId);
-      closeLiveStream(requestId);
+      abortMockSseStream(requestId);
     },
   });
 }
