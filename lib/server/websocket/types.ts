@@ -33,7 +33,11 @@ export type WebSocketMessage =
   | HeartbeatMessage
   | HeartbeatAckMessage
   | RequestMessage
+  | RequestAbortMessage
   | ResponseMessage
+  | ResponseStartMessage
+  | ResponseChunkMessage
+  | ResponseEndMessage
   | ErrorMessage
   | ClientListMessage
   | ConfigUpdateMessage;
@@ -81,6 +85,19 @@ export type RequestMessage = {
   body: unknown;
   /** How to interpret `body`. Omit / undefined = legacy JSON/text payload. */
   bodyEncoding?: "base64";
+  /**
+   * When true the agent must not buffer the local response: emit `response_start`
+   * as soon as headers arrive, then `response_chunk` per body chunk, then
+   * `response_end`. Required for SSE (`text/event-stream`) — those streams never
+   * `end`, so the unary `response` message can never be sent.
+   */
+  stream?: boolean;
+};
+
+/** Phone hung up (or the Next.js request aborted). Agent must destroy the local HTTP call. */
+export type RequestAbortMessage = {
+  type: "request_abort";
+  requestId: string;
 };
 
 export type ResponseMessage = {
@@ -89,6 +106,28 @@ export type ResponseMessage = {
   status: number;
   headers: Record<string, string>;
   body: unknown;
+  error?: string;
+};
+
+/** First frame of a streamed proxy response (headers only, body follows as chunks). */
+export type ResponseStartMessage = {
+  type: "response_start";
+  requestId: string;
+  status: number;
+  headers: Record<string, string>;
+};
+
+/** Raw body bytes of a streamed proxy response, base64-encoded. */
+export type ResponseChunkMessage = {
+  type: "response_chunk";
+  requestId: string;
+  data: string;
+};
+
+/** Stream finished (Nest closed, agent aborted, or local error). */
+export type ResponseEndMessage = {
+  type: "response_end";
+  requestId: string;
   error?: string;
 };
 

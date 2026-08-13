@@ -11,6 +11,9 @@ import type {
   RegisterMessage,
   HeartbeatMessage,
   ResponseMessage,
+  ResponseStartMessage,
+  ResponseChunkMessage,
+  ResponseEndMessage,
   RegisterAckMessage,
   HeartbeatAckMessage,
   ErrorMessage,
@@ -152,6 +155,22 @@ function handleResponse(socket: WebSocket, message: ResponseMessage): void {
   }
 }
 
+function handleResponseStart(message: ResponseStartMessage): void {
+  if (!clientManager.handleResponseStart(message)) {
+    console.log(`[WebSocket] response_start for unknown stream: ${message.requestId}`);
+  }
+}
+
+function handleResponseChunk(message: ResponseChunkMessage): void {
+  clientManager.handleResponseChunk(message);
+}
+
+function handleResponseEnd(message: ResponseEndMessage): void {
+  if (!clientManager.handleResponseEnd(message)) {
+    console.log(`[WebSocket] response_end for unknown stream: ${message.requestId}`);
+  }
+}
+
 export async function handleMessage(socket: WebSocket, data: string): Promise<void> {
   let message: WebSocketMessage;
 
@@ -174,6 +193,18 @@ export async function handleMessage(socket: WebSocket, data: string): Promise<vo
 
       case "response":
         handleResponse(socket, message);
+        break;
+
+      case "response_start":
+        handleResponseStart(message);
+        break;
+
+      case "response_chunk":
+        handleResponseChunk(message);
+        break;
+
+      case "response_end":
+        handleResponseEnd(message);
         break;
 
       default:

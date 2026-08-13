@@ -14,6 +14,10 @@ import { ensureServerConfigExists } from "@/lib/server/server-config";
 import { getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { clientManager } from "@/lib/server/websocket";
 import type { RequestMessage } from "@/lib/server/websocket";
+import { looksLikeSseRequest } from "@/lib/server/looks-like-sse";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 type RouteContext = {
   params: Promise<{ slug?: string[] }>;
@@ -161,6 +165,14 @@ async function readRequest(request: Request, context: RouteContext) {
   let proxyClientName: string | undefined;
   let proxyServiceName: string | undefined;
   let proxyClientOffline = false;
+  let sseBody: ReadableStream<Uint8Array> | null = null;
+
+  const forwardedPath = extractAppendedPath(
+    url.pathname,
+    serverNameFromPath,
+    apiNameFromPath,
+  );
+  const wantsSse = looksLikeSseRequest(method, forwardedPath, headers);
 
   const hasActiveProxy =
     (resolved.proxyToClient &&
@@ -201,23 +213,44 @@ async function readRequest(request: Request, context: RouteContext) {
 
   if (resolved.proxyToClient && resolved.proxyClientId && resolved.proxyServiceName) {
     try {
-      const proxied = await proxyToClientRequest({
-        serverName,
-        clientId: resolved.proxyClientId,
-        serviceName: resolved.proxyServiceName,
-        method,
-        path: extractAppendedPath(url.pathname, serverNameFromPath, apiNameFromPath),
-        headers,
-        rawRequestBody,
-        queryParams,
-      });
+      if (wantsSse) {
+        const proxied = await proxyToClientStream({
+          incomingRequest: request,
+          serverName,
+          clientId: resolved.proxyClientId,
+          serviceName: resolved.proxyServiceName,
+          method,
+          path: forwardedPath,
+          headers,
+          rawRequestBody,
+          queryParams,
+        });
+        responseStatus = proxied.status;
+        responseHeaders = proxied.headers;
+        responseBody = { _type: "sse-stream" };
+        sseBody = proxied.body;
+        proxyClientId = resolved.proxyClientId;
+        proxyClientName = proxied.clientName;
+        proxyServiceName = resolved.proxyServiceName;
+      } else {
+        const proxied = await proxyToClientRequest({
+          serverName,
+          clientId: resolved.proxyClientId,
+          serviceName: resolved.proxyServiceName,
+          method,
+          path: forwardedPath,
+          headers,
+          rawRequestBody,
+          queryParams,
+        });
 
-      responseStatus = proxied.status;
-      responseHeaders = proxied.headers;
-      responseBody = proxied.body;
-      proxyClientId = resolved.proxyClientId;
-      proxyClientName = proxied.clientName;
-      proxyServiceName = resolved.proxyServiceName;
+        responseStatus = proxied.status;
+        responseHeaders = proxied.headers;
+        responseBody = proxied.body;
+        proxyClientId = resolved.proxyClientId;
+        proxyClientName = proxied.clientName;
+        proxyServiceName = resolved.proxyServiceName;
+      }
     } catch (error) {
       responseStatus = 502;
       responseHeaders = {};
@@ -231,20 +264,36 @@ async function readRequest(request: Request, context: RouteContext) {
     }
   } else if (resolved.proxyMode && resolved.proxyUrl) {
     try {
-      const proxied = await proxyRequest({
-        originalRequest: request,
-        targetUrl: resolved.proxyUrl,
-        incomingUrl: url,
-        serverName: serverNameFromPath,
-        apiName: apiNameFromPath,
-        rawRequestBody,
-      });
+      if (wantsSse) {
+        const proxied = await proxyRequestStreaming({
+          originalRequest: request,
+          targetUrl: resolved.proxyUrl,
+          incomingUrl: url,
+          serverName: serverNameFromPath,
+          apiName: apiNameFromPath,
+          rawRequestBody,
+        });
+        responseStatus = proxied.status;
+        responseHeaders = proxied.headers;
+        responseBody = { _type: "sse-stream" };
+        sseBody = proxied.body;
+        proxyResolvedUrl = proxied.resolvedUrl;
+      } else {
+        const proxied = await proxyRequest({
+          originalRequest: request,
+          targetUrl: resolved.proxyUrl,
+          incomingUrl: url,
+          serverName: serverNameFromPath,
+          apiName: apiNameFromPath,
+          rawRequestBody,
+        });
 
-      responseStatus = proxied.status;
-      responseHeaders = proxied.headers;
-      responseBody = proxied.body;
-      proxyRawResponseBody = proxied.rawBody;
-      proxyResolvedUrl = proxied.resolvedUrl;
+        responseStatus = proxied.status;
+        responseHeaders = proxied.headers;
+        responseBody = proxied.body;
+        proxyRawResponseBody = proxied.rawBody;
+        proxyResolvedUrl = proxied.resolvedUrl;
+      }
     } catch (error) {
       responseStatus = 502;
       responseHeaders = {};
@@ -295,6 +344,10 @@ async function readRequest(request: Request, context: RouteContext) {
     responseBody,
     responseHeaders,
   });
+
+  if (sseBody) {
+    return buildStreamResponse(responseStatus, responseHeaders, sseBody);
+  }
 
   return buildOutboundResponse(
     responseStatus,
@@ -358,6 +411,26 @@ function isNullBodyStatus(status: number): boolean {
   return status === 204 || status === 205 || status === 304;
 }
 
+function buildStreamResponse(
+  status: number,
+  headers: Record<string, string>,
+  body: ReadableStream<Uint8Array>,
+): NextResponse {
+  const outboundHeaders = sanitizeProxyResponseHeaders(headers);
+  outboundHeaders["Cache-Control"] = "no-cache, no-transform";
+  outboundHeaders["X-Accel-Buffering"] = "no";
+  const hasContentType = Object.keys(outboundHeaders).some(
+    (key) => key.toLowerCase() === "content-type",
+  );
+  if (!hasContentType) {
+    outboundHeaders["Content-Type"] = "text/event-stream";
+  }
+  return new NextResponse(body, {
+    status,
+    headers: outboundHeaders,
+  });
+}
+
 function sanitizeProxyResponseHeaders(
   headers: Record<string, string>,
 ): Record<string, string> {
@@ -387,6 +460,108 @@ function sanitizeProxyResponseHeaders(
 
 function generateRequestId(): string {
   return `req-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+}
+
+async function proxyToClientStream({
+  incomingRequest,
+  serverName,
+  clientId,
+  serviceName,
+  method,
+  path,
+  headers,
+  rawRequestBody,
+  queryParams,
+}: {
+  incomingRequest: Request;
+  serverName: string;
+  clientId: string;
+  serviceName: string;
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  rawRequestBody: ArrayBuffer;
+  queryParams: Record<string, string | string[]>;
+}): Promise<{
+  status: number;
+  headers: Record<string, string>;
+  body: ReadableStream<Uint8Array>;
+  clientName?: string;
+}> {
+  const clients = await getMergedClientsByServer(serverName);
+  const client = clients.find((c) => c.clientId === clientId);
+
+  if (!client) {
+    throw new Error(`Cliente "${clientId}" não encontrado.`);
+  }
+
+  if (client.status !== "online") {
+    throw new Error(`Cliente "${client.clientName}" está offline.`);
+  }
+
+  const serviceExists = client.localServices.some((s) => s.name === serviceName);
+  if (!serviceExists) {
+    throw new Error(
+      `Serviço "${serviceName}" não disponível no cliente "${client.clientName}".`,
+    );
+  }
+
+  const queryString = Object.entries(queryParams)
+    .map(([key, value]) => {
+      if (Array.isArray(value)) {
+        return value
+          .map((v) => `${encodeURIComponent(key)}=${encodeURIComponent(v)}`)
+          .join("&");
+      }
+      return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+    })
+    .join("&");
+
+  const fullPath = queryString ? `${path}?${queryString}` : path;
+  const hasBody = shouldSendBody(method) && rawRequestBody.byteLength > 0;
+  const requestId = generateRequestId();
+  const requestMessage: RequestMessage = {
+    type: "request",
+    requestId,
+    targetClientId: clientId,
+    serviceName,
+    method,
+    path: fullPath,
+    headers: sanitizeProxyResponseHeaders(headers),
+    body: hasBody ? Buffer.from(rawRequestBody).toString("base64") : null,
+    bodyEncoding: hasBody ? "base64" : undefined,
+    stream: true,
+  };
+
+  const started = clientManager.registerPendingStream(
+    requestId,
+    { serverName, clientId },
+    30000,
+  );
+
+  const sent = clientManager.sendToClient(serverName, clientId, requestMessage);
+  if (!sent) {
+    clientManager.abortStream(requestId);
+    throw new Error(
+      `Falha ao enviar requisição para cliente "${client.clientName}".`,
+    );
+  }
+
+  const onAbort = () => clientManager.abortStream(requestId);
+  incomingRequest.signal.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    const response = await started;
+    return {
+      status: response.status,
+      headers: response.headers,
+      body: response.body,
+      clientName: client.clientName,
+    };
+  } catch (error) {
+    incomingRequest.signal.removeEventListener("abort", onAbort);
+    throw error;
+  }
 }
 
 async function proxyToClientRequest({
@@ -538,6 +713,61 @@ async function proxyRequest({
     headers: proxiedHeaders,
     body: proxiedBody,
     rawBody,
+    resolvedUrl: proxyUrl.toString(),
+  };
+}
+
+async function proxyRequestStreaming({
+  originalRequest,
+  targetUrl,
+  incomingUrl,
+  serverName,
+  apiName,
+  rawRequestBody,
+}: {
+  originalRequest: Request;
+  targetUrl: string;
+  incomingUrl: URL;
+  serverName: string;
+  apiName: string;
+  rawRequestBody: ArrayBuffer;
+}): Promise<{
+  status: number;
+  headers: Record<string, string>;
+  body: ReadableStream<Uint8Array>;
+  resolvedUrl: string;
+}> {
+  const proxyUrl = new URL(targetUrl);
+  const appendedPath = extractAppendedPath(
+    incomingUrl.pathname,
+    serverName,
+    apiName,
+  );
+  proxyUrl.pathname = joinPaths(proxyUrl.pathname, appendedPath);
+  for (const [key, value] of incomingUrl.searchParams.entries()) {
+    proxyUrl.searchParams.append(key, value);
+  }
+
+  const proxyHeaders = new Headers(originalRequest.headers);
+  proxyHeaders.delete("host");
+  proxyHeaders.delete("content-length");
+  proxyHeaders.delete("connection");
+
+  const proxiedResponse = await fetch(proxyUrl.toString(), {
+    method: originalRequest.method,
+    headers: proxyHeaders,
+    body: shouldSendBody(originalRequest.method) ? rawRequestBody : undefined,
+    redirect: "manual",
+  });
+
+  if (!proxiedResponse.body) {
+    throw new Error("Upstream SSE response has no body.");
+  }
+
+  return {
+    status: proxiedResponse.status,
+    headers: Object.fromEntries(proxiedResponse.headers.entries()),
+    body: proxiedResponse.body,
     resolvedUrl: proxyUrl.toString(),
   };
 }

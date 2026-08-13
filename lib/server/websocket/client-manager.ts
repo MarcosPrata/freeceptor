@@ -5,12 +5,33 @@ import type {
   ProxyServiceInfo,
   WebSocketMessage,
   ResponseMessage,
+  ResponseStartMessage,
+  ResponseChunkMessage,
+  ResponseEndMessage,
   PendingRequest,
 } from "./types";
+
+type PendingStream = {
+  requestId: string;
+  serverName: string;
+  clientId: string;
+  clientKey: string;
+  started: boolean;
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  body: ReadableStream<Uint8Array>;
+  startTimeout: NodeJS.Timeout;
+  resolveStart: (value: {
+    status: number;
+    headers: Record<string, string>;
+    body: ReadableStream<Uint8Array>;
+  }) => void;
+  rejectStart: (error: Error) => void;
+};
 
 class ClientManager {
   private clients: Map<string, ConnectedClient> = new Map();
   private pendingRequests: Map<string, PendingRequest> = new Map();
+  private pendingStreams: Map<string, PendingStream> = new Map();
   private clientUpdateListeners: Set<(serverName: string) => void> = new Set();
 
   private buildClientKey(serverName: string, clientId: string): string {
@@ -58,6 +79,7 @@ class ClientManager {
     const client = this.clients.get(key);
     
     if (client) {
+      this.abortStreamsForClient(serverName, clientId);
       this.clients.delete(key);
       this.notifyClientUpdate(serverName);
       console.log(`[WebSocket] Client unregistered: ${client.clientName} (${clientId})`);
@@ -67,6 +89,7 @@ class ClientManager {
   unregisterBySocket(socket: WebSocket): void {
     for (const [key, client] of this.clients.entries()) {
       if (client.socket === socket) {
+        this.abortStreamsForClient(client.serverName, client.clientId);
         this.clients.delete(key);
         this.notifyClientUpdate(client.serverName);
         console.log(`[WebSocket] Client disconnected: ${client.clientName} (${client.clientId})`);
@@ -126,6 +149,7 @@ class ClientManager {
 
     for (const [key, client] of this.clients.entries()) {
       if (client.serverName.trim().toLowerCase() !== normalized) continue;
+      this.abortStreamsForClient(client.serverName, client.clientId);
       try {
         client.socket.close(1000, "Server deleted");
       } catch {
@@ -216,6 +240,139 @@ class ClientManager {
     }
     
     return false;
+  }
+
+  /**
+   * Waits for `response_start` (headers), then the caller pipes `body`.
+   * Chunks / end arrive later via handleResponseChunk / handleResponseEnd.
+   * `timeoutMs` only covers time-to-headers, not the lifetime of an SSE stream.
+   */
+  registerPendingStream(
+    requestId: string,
+    client: { serverName: string; clientId: string },
+    timeoutMs: number = 30000,
+  ): Promise<{
+    status: number;
+    headers: Record<string, string>;
+    body: ReadableStream<Uint8Array>;
+  }> {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+      },
+      cancel: () => {
+        this.abortStream(requestId);
+      },
+    });
+
+    return new Promise((resolve, reject) => {
+      const startTimeout = setTimeout(() => {
+        const pending = this.pendingStreams.get(requestId);
+        if (!pending || pending.started) return;
+        this.pendingStreams.delete(requestId);
+        this.sendToClient(pending.serverName, pending.clientId, {
+          type: "request_abort",
+          requestId,
+        });
+        try {
+          controller.error(new Error("Request timeout"));
+        } catch {
+          // already closed
+        }
+        reject(new Error("Request timeout"));
+      }, timeoutMs);
+
+      this.pendingStreams.set(requestId, {
+        requestId,
+        serverName: client.serverName,
+        clientId: client.clientId,
+        clientKey: this.buildClientKey(client.serverName, client.clientId),
+        started: false,
+        controller,
+        body,
+        startTimeout,
+        resolveStart: resolve,
+        rejectStart: reject,
+      });
+    });
+  }
+
+  handleResponseStart(message: ResponseStartMessage): boolean {
+    const pending = this.pendingStreams.get(message.requestId);
+    if (!pending || pending.started) return false;
+
+    pending.started = true;
+    clearTimeout(pending.startTimeout);
+    pending.resolveStart({
+      status: message.status,
+      headers: message.headers,
+      body: pending.body,
+    });
+    return true;
+  }
+
+  handleResponseChunk(message: ResponseChunkMessage): boolean {
+    const pending = this.pendingStreams.get(message.requestId);
+    if (!pending?.started) return false;
+    try {
+      pending.controller.enqueue(Buffer.from(message.data, "base64"));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  handleResponseEnd(message: ResponseEndMessage): boolean {
+    const pending = this.pendingStreams.get(message.requestId);
+    if (!pending) return false;
+    this.pendingStreams.delete(message.requestId);
+    clearTimeout(pending.startTimeout);
+
+    if (!pending.started) {
+      pending.rejectStart(new Error(message.error || "Stream ended before headers"));
+      return true;
+    }
+
+    try {
+      if (message.error) {
+        pending.controller.error(new Error(message.error));
+      } else {
+        pending.controller.close();
+      }
+    } catch {
+      // already closed (caller disconnected)
+    }
+    return true;
+  }
+
+  abortStream(requestId: string): void {
+    const pending = this.pendingStreams.get(requestId);
+    if (!pending) return;
+    this.pendingStreams.delete(requestId);
+    clearTimeout(pending.startTimeout);
+    this.sendToClient(pending.serverName, pending.clientId, {
+      type: "request_abort",
+      requestId,
+    });
+    if (!pending.started) {
+      pending.rejectStart(new Error("Aborted"));
+      return;
+    }
+    try {
+      pending.controller.close();
+    } catch {
+      // already closed
+    }
+  }
+
+  abortStreamsForClient(serverName: string, clientId: string): void {
+    const key = this.buildClientKey(serverName, clientId);
+    for (const [requestId, pending] of [...this.pendingStreams.entries()]) {
+      if (pending.clientKey === key) {
+        this.abortStream(requestId);
+      }
+    }
   }
 
   onClientUpdate(listener: (serverName: string) => void): () => void {
