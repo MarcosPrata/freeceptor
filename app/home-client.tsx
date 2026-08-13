@@ -40,6 +40,13 @@ import {
 } from "@codemirror/view";
 import { cn } from "@/lib/utils";
 import {
+  LiveStreamFeed,
+  LiveStatusPill,
+  StreamSourcePill,
+  formatStreamDuration,
+  type LiveStream,
+} from "@/components/LiveStreamFeed";
+import {
   analyzeImportFile,
   downloadTextFile,
   exportTimestamp,
@@ -285,6 +292,15 @@ function isValidParamName(name: string): boolean {
 
 function newDynamicRuleId(): string {
   return `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isSseLog(log: ApiRequestLog): boolean {
+  return (
+    typeof log.responseBody === "object" &&
+    log.responseBody != null &&
+    "_type" in log.responseBody &&
+    (log.responseBody as { _type?: unknown })._type === "sse-stream"
+  );
 }
 
 function statusPillClass(status: number): string {
@@ -2708,6 +2724,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
   const [apiConfigSaving, setApiConfigSaving] = useState(false);
 
   const [logs, setLogs] = useState<ApiRequestLog[]>([]);
+  const [liveStreams, setLiveStreams] = useState<LiveStream[]>([]);
   const [logsPage, setLogsPage] = useState(1);
   const [routes, setRoutes] = useState<ApiRouteStat[]>([]);
   const [loading, setLoading] = useState(true);
@@ -3962,8 +3979,73 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           logs?: ApiRequestLog[];
           routes?: ApiRouteStat[];
           clients?: ProxyClientInfo[];
+          streams?: LiveStream[];
+          stream?: LiveStream;
+          requestId?: string;
+          frame?: LiveStream["frames"][number];
+          closedAt?: string;
+          frameCount?: number;
+          error?: string;
         };
         if (data.type === "heartbeat") return; // ignorar keepalive
+        if (data.type === "stream_open" && data.stream) {
+          const next = data.stream;
+          setLiveStreams((prev) => [
+            next,
+            ...prev.filter((s) => s.requestId !== next.requestId),
+          ]);
+          return;
+        }
+        if (data.type === "stream_update" && data.stream) {
+          const next = data.stream;
+          setLiveStreams((prev) =>
+            prev.map((s) =>
+              s.requestId === next.requestId
+                ? {
+                    ...s,
+                    mock: next.mock,
+                    source: next.source,
+                    overrodeApiProxy: next.overrodeApiProxy,
+                    fakeEventsEnabled: next.fakeEventsEnabled,
+                    fakeEventsIntervalMs: next.fakeEventsIntervalMs,
+                  }
+                : s,
+            ),
+          );
+          return;
+        }
+        if (data.type === "stream_frame" && data.requestId && data.frame) {
+          const frame = data.frame;
+          const requestId = data.requestId;
+          setLiveStreams((prev) =>
+            prev.map((s) =>
+              s.requestId === requestId
+                ? {
+                    ...s,
+                    frames: [...s.frames, frame].slice(-200),
+                    frameCount: s.frameCount + 1,
+                  }
+                : s,
+            ),
+          );
+          return;
+        }
+        if (data.type === "stream_close" && data.requestId) {
+          const requestId = data.requestId;
+          setLiveStreams((prev) =>
+            prev.map((s) =>
+              s.requestId === requestId
+                ? {
+                    ...s,
+                    closedAt: data.closedAt,
+                    error: data.error,
+                    frameCount: data.frameCount ?? s.frameCount,
+                  }
+                : s,
+            ),
+          );
+          return;
+        }
         if (data.type === "api_activity" && data.apiName) {
           const activeApi = data.apiName.toLowerCase();
           if (activeApi !== selectedApiRef.current.toLowerCase()) {
@@ -3975,6 +4057,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           return;
         }
         if (data.logs) setLogs(data.logs);
+        if (data.streams) setLiveStreams(data.streams);
         if (data.routes) setRoutes(data.routes);
         if (data.clients) setConnectedClients(data.clients);
         if (data.logs || data.routes) setLoading(false);
@@ -4354,6 +4437,15 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
     (safeLogsPage - 1) * LOGS_PAGE_SIZE,
     safeLogsPage * LOGS_PAGE_SIZE,
   );
+  const openLiveStreams = liveStreams.filter((s) => !s.closedAt);
+  const openLiveLogIds = new Set(
+    openLiveStreams.map((s) => s.logId).filter((id): id is string => Boolean(id)),
+  );
+  const listLogs = paginatedLogs.filter((log) => !openLiveLogIds.has(log.id));
+
+  function streamForLog(log: ApiRequestLog): LiveStream | undefined {
+    return liveStreams.find((s) => s.logId === log.id);
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-50">
@@ -4829,7 +4921,11 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
             {activeTab === "requests"
               ? loading
                 ? "Carregando requisições..."
-                : `${logs.length} requisições registradas (mostrando as mais recentes primeiro)`
+                : `${logs.length} requisições registradas (mostrando as mais recentes primeiro)${
+                    openLiveStreams.length
+                      ? ` · ${openLiveStreams.length} ligação${openLiveStreams.length === 1 ? "" : "ões"} ao vivo`
+                      : ""
+                  }`
               : loading
                 ? "Carregando rotas..."
                 : `${routes.length} combinações método + path`}
@@ -4838,7 +4934,61 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
           <div className="min-h-0 flex-1 overflow-auto text-xs">
             {activeTab === "requests" ? (
               <div className="space-y-3 p-3">
-                {paginatedLogs.map((log) => (
+                {openLiveStreams.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 px-0.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-400">
+                      <span className="relative flex h-1.5 w-1.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cyan-500" />
+                      </span>
+                      Ligações ao vivo
+                      <span className="font-normal normal-case tracking-normal text-zinc-500">
+                        SSE / streams HTTP. Expandir para ver os frames.
+                      </span>
+                    </div>
+                    {openLiveStreams.map((stream) => (
+                      <div
+                        key={stream.requestId}
+                        className="rounded-md border border-cyan-300 bg-white shadow-sm dark:border-cyan-900/70 dark:bg-zinc-950"
+                      >
+                        <div
+                          className="grid cursor-pointer grid-cols-[auto_auto_1fr_auto] items-center gap-3 px-3 py-2"
+                          onClick={() => toggleLogExpanded(stream.logId || stream.requestId)}
+                        >
+                          <span className="font-mono text-[11px]">
+                            {new Date(stream.openedAt).toLocaleTimeString()}
+                          </span>
+                          <span
+                            className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                            style={{
+                              backgroundColor: "rgba(59,130,246,0.1)",
+                              color: "#1d4ed8",
+                            }}
+                          >
+                            {stream.method}
+                          </span>
+                          <span className="inline-flex items-center gap-2 font-mono text-[11px]">
+                            <span>{stream.path || "-"}</span>
+                            <StreamSourcePill
+                              source={stream.source ?? (stream.mock ? "mock" : undefined)}
+                              override={Boolean(stream.overrodeApiProxy)}
+                            />
+                            <span className="font-sans text-[10px] text-zinc-500">
+                              {formatStreamDuration(stream.openedAt)} · {stream.frameCount} evt
+                            </span>
+                          </span>
+                          <LiveStatusPill live />
+                        </div>
+                        {expandedIds.includes(stream.logId || stream.requestId) && (
+                          <div className="border-t border-cyan-100 px-3 py-3 dark:border-cyan-950">
+                            <LiveStreamFeed stream={stream} />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {listLogs.map((log) => (
                   <div
                     key={log.id}
                     className="rounded-md border border-zinc-200 bg-white shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900/60"
@@ -4917,16 +5067,27 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                           );
                         })()}
                       </span>
-                      {!expandedIds.includes(log.id) && (
-                        <span
-                          className={cn(
-                            "inline-flex min-w-12 items-center justify-center rounded-full px-2.5 py-1 font-mono text-[12px] font-semibold",
-                            statusPillClass(log.responseStatus),
-                          )}
-                        >
-                          {log.responseStatus}
-                        </span>
-                      )}
+                      {!expandedIds.includes(log.id) &&
+                        (() => {
+                          const stream = streamForLog(log);
+                          if (isSseLog(log) || stream) {
+                            return (
+                              <LiveStatusPill
+                                live={Boolean(stream && !stream.closedAt)}
+                              />
+                            );
+                          }
+                          return (
+                            <span
+                              className={cn(
+                                "inline-flex min-w-12 items-center justify-center rounded-full px-2.5 py-1 font-mono text-[12px] font-semibold",
+                                statusPillClass(log.responseStatus),
+                              )}
+                            >
+                              {log.responseStatus}
+                            </span>
+                          );
+                        })()}
                     </div>
 
                     {expandedIds.includes(log.id) && (
@@ -5054,11 +5215,26 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                               defaultBodyMode={displayBodyMode}
                               defaultJsonCollapsed={displayJsonCollapsed}
                             />
-                            <JsonBodyViewer
-                              value={log.responseBody}
-                              defaultBodyMode={displayBodyMode}
-                              defaultJsonCollapsed={displayJsonCollapsed}
-                            />
+                            {(() => {
+                              const stream = streamForLog(log);
+                              if (stream) {
+                                return <LiveStreamFeed stream={stream} compact />;
+                              }
+                              if (isSseLog(log)) {
+                                return (
+                                  <p className="mt-2 text-[11px] text-zinc-500">
+                                    Stream SSE. Os frames já não estão em memória neste processo (a ligação fechou ou o server reiniciou).
+                                  </p>
+                                );
+                              }
+                              return (
+                                <JsonBodyViewer
+                                  value={log.responseBody}
+                                  defaultBodyMode={displayBodyMode}
+                                  defaultJsonCollapsed={displayJsonCollapsed}
+                                />
+                              );
+                            })()}
                           </LogThreadBlock>
                         </div>
                       </div>

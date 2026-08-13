@@ -10,6 +10,7 @@ import type {
   ResponseEndMessage,
   PendingRequest,
 } from "./types";
+import { appendLiveStreamChunk, closeLiveStream } from "../live-streams";
 
 type PendingStream = {
   requestId: string;
@@ -316,7 +317,9 @@ class ClientManager {
     const pending = this.pendingStreams.get(message.requestId);
     if (!pending?.started) return false;
     try {
-      pending.controller.enqueue(Buffer.from(message.data, "base64"));
+      const bytes = Buffer.from(message.data, "base64");
+      appendLiveStreamChunk(message.requestId, bytes);
+      pending.controller.enqueue(bytes);
       return true;
     } catch {
       return false;
@@ -328,6 +331,7 @@ class ClientManager {
     if (!pending) return false;
     this.pendingStreams.delete(message.requestId);
     clearTimeout(pending.startTimeout);
+    closeLiveStream(message.requestId, message.error);
 
     if (!pending.started) {
       pending.rejectStart(new Error(message.error || "Stream ended before headers"));
@@ -351,6 +355,7 @@ class ClientManager {
     if (!pending) return;
     this.pendingStreams.delete(requestId);
     clearTimeout(pending.startTimeout);
+    closeLiveStream(requestId);
     this.sendToClient(pending.serverName, pending.clientId, {
       type: "request_abort",
       requestId,

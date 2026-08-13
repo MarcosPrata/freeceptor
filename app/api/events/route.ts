@@ -7,6 +7,10 @@ import {
 import { getServerFromCookie } from "@/lib/server/server-session";
 import { getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { clientManager } from "@/lib/server/websocket";
+import {
+  listLiveStreams,
+  subscribeToLiveStreams,
+} from "@/lib/server/live-streams";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +54,7 @@ export async function GET(request: Request) {
       send({
         type: "snapshot",
         ...snapshot,
+        streams: listLiveStreams(serverName, apiName),
         clients: await getMergedClientsByServer(serverName),
       });
 
@@ -71,6 +76,15 @@ export async function GET(request: Request) {
         });
       });
 
+      const unsubscribeStreams = subscribeToLiveStreams(serverName, (event) => {
+        const eventApi =
+          event.type === "stream_open" || event.type === "stream_update"
+            ? event.stream.apiName
+            : event.apiName;
+        if (eventApi.toLowerCase() !== apiName.toLowerCase()) return;
+        send(event);
+      });
+
       const heartbeatId = setInterval(() => {
         sendHeartbeat();
       }, 15000);
@@ -82,6 +96,7 @@ export async function GET(request: Request) {
         unsubscribe();
         unsubscribeActivity();
         unsubscribeClients();
+        unsubscribeStreams();
         controller.close();
       }
 

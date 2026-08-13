@@ -15,6 +15,8 @@ import { getMergedClientsByServer } from "@/lib/server/proxy-clients";
 import { clientManager } from "@/lib/server/websocket";
 import type { RequestMessage } from "@/lib/server/websocket";
 import { looksLikeSseRequest } from "@/lib/server/looks-like-sse";
+import { bindLiveStream, tapReadableStream } from "@/lib/server/live-streams";
+import { createMockSseStream, parseFakeSseQuery } from "@/lib/server/mock-sse";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -166,6 +168,7 @@ async function readRequest(request: Request, context: RouteContext) {
   let proxyServiceName: string | undefined;
   let proxyClientOffline = false;
   let sseBody: ReadableStream<Uint8Array> | null = null;
+  let sseStreamId: string | undefined;
 
   const forwardedPath = extractAppendedPath(
     url.pathname,
@@ -227,8 +230,9 @@ async function readRequest(request: Request, context: RouteContext) {
         });
         responseStatus = proxied.status;
         responseHeaders = proxied.headers;
-        responseBody = { _type: "sse-stream" };
+        responseBody = { _type: "sse-stream", live: true };
         sseBody = proxied.body;
+        sseStreamId = proxied.requestId;
         proxyClientId = resolved.proxyClientId;
         proxyClientName = proxied.clientName;
         proxyServiceName = resolved.proxyServiceName;
@@ -275,8 +279,9 @@ async function readRequest(request: Request, context: RouteContext) {
         });
         responseStatus = proxied.status;
         responseHeaders = proxied.headers;
-        responseBody = { _type: "sse-stream" };
+        responseBody = { _type: "sse-stream", live: true };
         sseBody = proxied.body;
+        sseStreamId = proxied.streamId;
         proxyResolvedUrl = proxied.resolvedUrl;
       } else {
         const proxied = await proxyRequest({
@@ -304,6 +309,28 @@ async function readRequest(request: Request, context: RouteContext) {
     }
   }
 
+  const mockFake = parseFakeSseQuery(queryParams);
+  let mockSse = false;
+
+  if (wantsSse && !sseBody) {
+    sseStreamId = generateRequestId();
+    sseBody = createMockSseStream(sseStreamId, {
+      fakeEnabled: mockFake.enabled,
+      fakeIntervalMs: mockFake.intervalMs,
+      serverName,
+      apiName: apiNameFromPath,
+      method,
+      path: pathFromSlug,
+    });
+    mockSse = true;
+    responseStatus = 200;
+    responseHeaders = {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+    };
+    responseBody = { _type: "sse-stream", live: true, mock: true };
+  }
+
   // Ensure every called route appears in configs (auto-create default config on first call)
   if (resolved.source === "none") {
     await setRouteConfig(serverName, {
@@ -324,7 +351,7 @@ async function readRequest(request: Request, context: RouteContext) {
     });
   }
 
-  await addRequestLog(serverName, apiNameFromPath, {
+  const logId = await addRequestLog(serverName, apiNameFromPath, {
     method,
     path: pathFromSlug,
     slug: slug ?? [],
@@ -344,6 +371,28 @@ async function readRequest(request: Request, context: RouteContext) {
     responseBody,
     responseHeaders,
   });
+
+  if (sseStreamId && sseBody) {
+    bindLiveStream(sseStreamId, {
+      logId,
+      serverName,
+      apiName: apiNameFromPath,
+      method,
+      path: pathFromSlug,
+      status: responseStatus,
+      mock: mockSse,
+      source: mockSse
+        ? "mock"
+        : proxyClientId
+          ? "client"
+          : resolved.proxyMode && resolved.proxyUrl
+            ? "url"
+            : "mock",
+      overrodeApiProxy: Boolean(resolved.overrodeApiProxy),
+      fakeEventsEnabled: mockSse ? mockFake.enabled : false,
+      fakeEventsIntervalMs: mockSse ? mockFake.intervalMs : undefined,
+    });
+  }
 
   if (sseBody) {
     return buildStreamResponse(responseStatus, responseHeaders, sseBody);
@@ -486,6 +535,7 @@ async function proxyToClientStream({
   status: number;
   headers: Record<string, string>;
   body: ReadableStream<Uint8Array>;
+  requestId: string;
   clientName?: string;
 }> {
   const clients = await getMergedClientsByServer(serverName);
@@ -556,6 +606,7 @@ async function proxyToClientStream({
       status: response.status,
       headers: response.headers,
       body: response.body,
+      requestId,
       clientName: client.clientName,
     };
   } catch (error) {
@@ -735,6 +786,7 @@ async function proxyRequestStreaming({
   status: number;
   headers: Record<string, string>;
   body: ReadableStream<Uint8Array>;
+  streamId: string;
   resolvedUrl: string;
 }> {
   const proxyUrl = new URL(targetUrl);
@@ -764,10 +816,12 @@ async function proxyRequestStreaming({
     throw new Error("Upstream SSE response has no body.");
   }
 
+  const streamId = generateRequestId();
   return {
     status: proxiedResponse.status,
     headers: Object.fromEntries(proxiedResponse.headers.entries()),
-    body: proxiedResponse.body,
+    body: tapReadableStream(proxiedResponse.body, streamId),
+    streamId,
     resolvedUrl: proxyUrl.toString(),
   };
 }

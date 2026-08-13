@@ -43,19 +43,35 @@ async function main() {
 `);
   });
 
-  process.on("SIGINT", async () => {
+  // Ctrl+C used to orphan this process: yarn dies, Node stays in
+  // `server.close()` waiting for the dashboard SSE (`GET /api/events`)
+  // and any mock stream. The listen socket is already gone, so `lsof :8001`
+  // looks free while `.next/dev/lock` is still held.
+  let shuttingDown = false;
+  function shutdown() {
+    if (shuttingDown) {
+      process.exit(1);
+    }
+    shuttingDown = true;
     console.log("\nShutting down...");
-    await closeWebSocketServer();
-    server.close(() => {
-      console.log("Goodbye!");
-      process.exit(0);
-    });
-  });
 
-  process.on("SIGTERM", async () => {
-    await closeWebSocketServer();
-    server.close(() => process.exit(0));
-  });
+    const force = setTimeout(() => process.exit(1), 2000);
+    force.unref();
+
+    void closeWebSocketServer().finally(() => {
+      server.close(() => {
+        clearTimeout(force);
+        console.log("Goodbye!");
+        process.exit(0);
+      });
+      if (typeof server.closeAllConnections === "function") {
+        server.closeAllConnections();
+      }
+    });
+  }
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 main().catch((err) => {

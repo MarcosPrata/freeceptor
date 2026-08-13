@@ -412,7 +412,7 @@ export async function addRequestLog(
   serverName: string,
   apiName: string,
   entry: Omit<ApiRequestLog, "id" | "timestamp" | "apiName">,
-): Promise<void> {
+): Promise<string> {
   const collection = await logsCollection();
   const now = new Date();
   const normalizedPath = normalizePath(entry.path);
@@ -443,6 +443,7 @@ export async function addRequestLog(
 
   await notifyChange(serverName, normalizedApi);
   notifyRequestActivity(serverName, normalizedApi);
+  return uniqueId;
 }
 
 export async function getRequestLogs(
