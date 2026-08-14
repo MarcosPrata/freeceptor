@@ -1,3 +1,5 @@
+import { cookies } from "next/headers";
+
 export const SERVER_COOKIE_NAME = "freeceptor_server";
 export const DEFAULT_SERVER_NAME = "default";
 
@@ -18,9 +20,21 @@ function parseCookieHeader(cookieHeader: string | null): Record<string, string> 
 }
 
 export function getServerFromCookie(request: Request): string | undefined {
-  const cookies = parseCookieHeader(request.headers.get("cookie"));
-  const value = cookies[SERVER_COOKIE_NAME]?.trim();
+  const cookieMap = parseCookieHeader(request.headers.get("cookie"));
+  const value = cookieMap[SERVER_COOKIE_NAME]?.trim();
   return value || undefined;
+}
+
+export async function getServerSession(): Promise<{
+  authenticated: boolean;
+  serverName: string | null;
+}> {
+  const cookieStore = await cookies();
+  const serverName = cookieStore.get(SERVER_COOKIE_NAME)?.value?.trim() || null;
+  return {
+    authenticated: !!serverName,
+    serverName,
+  };
 }
 
 export function resolveServerNameForIncomingRequest(request: Request): string {

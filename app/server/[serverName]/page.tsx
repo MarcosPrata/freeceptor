@@ -1,5 +1,15 @@
-import Home from "@/app/page";
+import { getServerSession } from "@/lib/server/server-session";
+import { HomeClient } from "@/app/home-client";
 
-export default function ServerPage() {
-  return <Home />;
+export default async function ServerPage() {
+  const session = await getServerSession();
+  return (
+    <HomeClient
+      initialSession={
+        session.authenticated && session.serverName
+          ? { authenticated: true, serverName: session.serverName }
+          : null
+      }
+    />
+  );
 }

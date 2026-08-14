@@ -10,7 +10,9 @@ export async function GET(request: Request) {
       { status: 401 },
     );
   }
-  const logs = await getRequestLogs(serverName);
+  const url = new URL(request.url);
+  const apiName = url.searchParams.get("apiName") || "default";
+  const logs = await getRequestLogs(serverName, apiName);
   return NextResponse.json(logs);
 }
 
@@ -22,7 +24,8 @@ export async function DELETE(request: Request) {
       { status: 401 },
     );
   }
-  await clearRequestLogs(serverName);
+  const url = new URL(request.url);
+  const apiName = url.searchParams.get("apiName") || "default";
+  await clearRequestLogs(serverName, apiName);
   return NextResponse.json({ ok: true });
 }
-

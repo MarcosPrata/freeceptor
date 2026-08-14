@@ -10,7 +10,8 @@ export async function GET(request: Request) {
       { status: 401 },
     );
   }
-  const configs = await getAllRouteConfigs(serverName);
+  const url = new URL(request.url);
+  const apiName = url.searchParams.get("apiName") || "default";
+  const configs = await getAllRouteConfigs(serverName, apiName);
   return NextResponse.json(configs);
 }
-

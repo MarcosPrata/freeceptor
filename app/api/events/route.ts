@@ -2,8 +2,15 @@ import { NextResponse } from "next/server";
 import {
   getSnapshot,
   subscribeToChanges,
+  subscribeToServerActivity,
 } from "@/lib/server/request-log";
 import { getServerFromCookie } from "@/lib/server/server-session";
+import { getMergedClientsByServer } from "@/lib/server/proxy-clients";
+import { clientManager } from "@/lib/server/websocket";
+import {
+  listLiveStreams,
+  subscribeToLiveStreams,
+} from "@/lib/server/live-streams";
 
 export const dynamic = "force-dynamic";
 
@@ -15,14 +22,16 @@ export async function GET(request: Request) {
       { status: 401 },
     );
   }
+
+  const url = new URL(request.url);
+  const apiName = url.searchParams.get("apiName") || "default";
+
   const { signal } = request;
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
-      let heartbeatId: ReturnType<typeof setInterval> | undefined;
-
       function send(data: unknown) {
         if (closed) return;
         const json = JSON.stringify(data);
@@ -36,34 +45,63 @@ export async function GET(request: Request) {
 
       function sendHeartbeat() {
         if (closed) return;
-        controller.enqueue(encoder.encode(": heartbeat\n\n"));
+        // Send as a real data event (not a comment) so browsers reset their connection timer.
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`));
       }
 
-      function closeStream(unsubscribe: () => void) {
-        if (closed) return;
-        closed = true;
-        if (heartbeatId) clearInterval(heartbeatId);
-        unsubscribe();
-        controller.close();
-      }
-
-      // envia snapshot inicial
       sendRetryHint(3000);
-      send({ type: "snapshot", ...(await getSnapshot(serverName)) });
+      const snapshot = await getSnapshot(serverName, apiName);
+      send({
+        type: "snapshot",
+        ...snapshot,
+        streams: listLiveStreams(serverName, apiName),
+        clients: await getMergedClientsByServer(serverName),
+      });
 
-      // assina mudanças
-      const unsubscribe = subscribeToChanges(serverName, (payload) => {
+      const unsubscribe = subscribeToChanges(serverName, apiName, (payload) => {
         send({ type: "update", ...payload });
       });
 
-      // heartbeat evita timeout silencioso em conexões longas
-      heartbeatId = setInterval(() => {
+      const unsubscribeActivity = subscribeToServerActivity(
+        serverName,
+        (activeApiName) => {
+          send({ type: "api_activity", apiName: activeApiName });
+        },
+      );
+
+      const unsubscribeClients = clientManager.onClientUpdate((updatedServer) => {
+        if (updatedServer !== serverName) return;
+        void getMergedClientsByServer(serverName).then((clients) => {
+          send({ type: "clients", clients });
+        });
+      });
+
+      const unsubscribeStreams = subscribeToLiveStreams(serverName, (event) => {
+        const eventApi =
+          event.type === "stream_open" || event.type === "stream_update"
+            ? event.stream.apiName
+            : event.apiName;
+        if (eventApi.toLowerCase() !== apiName.toLowerCase()) return;
+        send(event);
+      });
+
+      const heartbeatId = setInterval(() => {
         sendHeartbeat();
       }, 15000);
 
-      // encerra quando o cliente desconectar
+      function closeStream() {
+        if (closed) return;
+        closed = true;
+        clearInterval(heartbeatId);
+        unsubscribe();
+        unsubscribeActivity();
+        unsubscribeClients();
+        unsubscribeStreams();
+        controller.close();
+      }
+
       signal.addEventListener("abort", () => {
-        closeStream(unsubscribe);
+        closeStream();
       });
     },
     cancel() {
@@ -81,4 +119,3 @@ export async function GET(request: Request) {
     },
   });
 }
-
