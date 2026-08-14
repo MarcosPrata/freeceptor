@@ -31,6 +31,8 @@ export type LiveStream = {
   overrodeApiProxy?: boolean;
   fakeEventsEnabled?: boolean;
   fakeEventsIntervalMs?: number;
+  clientIp?: string;
+  clientGeo?: string;
 };
 
 export type LiveStreamEvent =
@@ -142,6 +144,8 @@ class LiveStreamRegistry {
       overrodeApiProxy?: boolean;
       fakeEventsEnabled?: boolean;
       fakeEventsIntervalMs?: number;
+      clientIp?: string;
+      clientGeo?: string;
     },
   ): LiveStream {
     const record = this.ensure(requestId);
@@ -162,6 +166,8 @@ class LiveStreamRegistry {
     if (meta.fakeEventsIntervalMs !== undefined) {
       record.fakeEventsIntervalMs = meta.fakeEventsIntervalMs;
     }
+    if (meta.clientIp !== undefined) record.clientIp = meta.clientIp;
+    if (meta.clientGeo !== undefined) record.clientGeo = meta.clientGeo;
     this.emit(record.serverName, { type: "stream_open", stream: toPublic(record) });
     return toPublic(record);
   }
@@ -177,6 +183,8 @@ class LiveStreamRegistry {
       mock?: boolean;
       fakeEventsEnabled?: boolean;
       fakeEventsIntervalMs?: number;
+      clientIp?: string;
+      clientGeo?: string;
     },
   ): LiveStream | undefined {
     const record = this.streams.get(requestId);
@@ -188,6 +196,8 @@ class LiveStreamRegistry {
     if (patch.fakeEventsIntervalMs !== undefined) {
       record.fakeEventsIntervalMs = patch.fakeEventsIntervalMs;
     }
+    if (patch.clientIp !== undefined) record.clientIp = patch.clientIp;
+    if (patch.clientGeo !== undefined) record.clientGeo = patch.clientGeo;
     const stream = toPublic(record);
     if (record.serverName && record.apiName) {
       this.emit(record.serverName, {
@@ -320,6 +330,8 @@ export function bindLiveStream(
     overrodeApiProxy?: boolean;
     fakeEventsEnabled?: boolean;
     fakeEventsIntervalMs?: number;
+    clientIp?: string;
+    clientGeo?: string;
   },
 ): LiveStream {
   return registry.bind(requestId, meta);
@@ -335,6 +347,8 @@ export function updateLiveStreamMeta(
     mock?: boolean;
     fakeEventsEnabled?: boolean;
     fakeEventsIntervalMs?: number;
+    clientIp?: string;
+    clientGeo?: string;
   },
 ): LiveStream | undefined {
   return registry.updateMeta(requestId, patch);

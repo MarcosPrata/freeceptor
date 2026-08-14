@@ -4,8 +4,11 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-
-const FREECEPTOR_CLIENT_IMAGE = "mhpjunior/freeceptor-client:latest";
+import {
+  EXPECTED_CLIENT_VERSION,
+  FREECEPTOR_CLIENT_IMAGE,
+  isCompatibleClientVersion,
+} from "@/lib/client-version";
 
 function getServerNameFromPath(pathname: string): string {
   const match = pathname.match(/\/server\/([^/]+)(?:\/|$)/);
@@ -32,6 +35,7 @@ type ProxyClientInfo = {
   lastHeartbeat: string;
   status: "online" | "offline";
   requiresEditPassword?: boolean;
+  version?: string;
 };
 
 type RequestResponse = {
@@ -56,6 +60,14 @@ type EditableService = {
 
 function createEditableServiceId(): string {
   return `svc-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function clientVersionWarning(version?: string): string | null {
+  if (isCompatibleClientVersion(version)) return null;
+  if (!version?.trim()) {
+    return `Client antigo (não enviou versão). Esperada: ${EXPECTED_CLIENT_VERSION}.`;
+  }
+  return `Versão incompatível (${version}). Esperada: ${EXPECTED_CLIENT_VERSION}.`;
 }
 
 function formatTimestamp(isoString: string): string {
@@ -722,7 +734,12 @@ export default function ClientsPage() {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {clients.map((client) => (
+                  {clients.map((client) => {
+                    const versionWarning =
+                      client.status === "online"
+                        ? clientVersionWarning(client.version)
+                        : null;
+                    return (
                     <div
                       key={client.clientId}
                       onClick={() => selectClient(client)}
@@ -746,6 +763,11 @@ export default function ClientsPage() {
                           <span className="text-sm font-medium">
                             {client.clientName}
                           </span>
+                          {client.version ? (
+                            <span className="font-mono text-[10px] text-zinc-400">
+                              v{client.version}
+                            </span>
+                          ) : null}
                         </div>
                         <span
                           className={cn(
@@ -775,8 +797,14 @@ export default function ClientsPage() {
                         <span>Conectado: {formatTimestamp(client.connectedAt)}</span>
                         <span>Heartbeat: {formatRelativeTime(client.lastHeartbeat)}</span>
                       </div>
+                      {versionWarning ? (
+                        <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                          {versionWarning}
+                        </div>
+                      ) : null}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -842,6 +870,12 @@ export default function ClientsPage() {
                 </div>
               ) : rightPanelView === "edit" ? (
                 <div className="space-y-4">
+                  {selectedClient.status === "online" &&
+                    clientVersionWarning(selectedClient.version) && (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                      {clientVersionWarning(selectedClient.version)}
+                    </div>
+                  )}
                   {selectedClientRequiresEditPassword && (
                     <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
                       Este cliente tem senha — a configuração só pode ser alterada no Freeceptor Client.

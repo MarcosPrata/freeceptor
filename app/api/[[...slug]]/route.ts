@@ -18,6 +18,7 @@ import { looksLikeSseRequest } from "@/lib/server/looks-like-sse";
 import { bindLiveStream, tapReadableStream } from "@/lib/server/live-streams";
 import { abortMockSseStream, createMockSseStream, parseFakeSseQuery } from "@/lib/server/mock-sse";
 import { onRequestClosed } from "@/lib/server/request-lifetime";
+import { extractClientIp, resolveClientGeo } from "@/lib/server/client-geo";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -352,6 +353,9 @@ async function readRequest(request: Request, context: RouteContext) {
     });
   }
 
+  const clientIp = extractClientIp(request.headers);
+  const clientGeo = await resolveClientGeo(clientIp);
+
   const logId = await addRequestLog(serverName, apiNameFromPath, {
     method,
     path: pathFromSlug,
@@ -371,6 +375,8 @@ async function readRequest(request: Request, context: RouteContext) {
     responseStatus,
     responseBody,
     responseHeaders,
+    clientIp: clientGeo.ip,
+    clientGeo: clientGeo.label || undefined,
   });
 
   if (sseStreamId && sseBody) {
@@ -392,6 +398,8 @@ async function readRequest(request: Request, context: RouteContext) {
       overrodeApiProxy: Boolean(resolved.overrodeApiProxy),
       fakeEventsEnabled: mockSse ? mockFake.enabled : false,
       fakeEventsIntervalMs: mockSse ? mockFake.intervalMs : undefined,
+      clientIp: clientGeo.ip,
+      clientGeo: clientGeo.label || undefined,
     });
     const streamId = sseStreamId;
     const isMockStream = mockSse;

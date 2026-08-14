@@ -52,7 +52,8 @@ function sendError(socket: WebSocket, code: string, message: string, requestId?:
 }
 
 async function handleRegister(socket: WebSocket, message: RegisterMessage): Promise<void> {
-  const { clientId, clientName, serverName, password, clientPassword, localServices } = message;
+  const { clientId, clientName, serverName, password, clientPassword, localServices, version } =
+    message;
 
   if (!clientId || !serverName) {
     const ack: RegisterAckMessage = {
@@ -100,12 +101,14 @@ async function handleRegister(socket: WebSocket, message: RegisterMessage): Prom
   const effectiveServices =
     override && !overrideMatches ? override.localServices : incomingServices;
 
+  // `version` é opcional: client antigo liga na mesma; a UI é que avisa.
   clientManager.registerClient(
     socket,
     clientId,
     effectiveName,
     serverName,
     effectiveServices,
+    version,
   );
 
   const ack: RegisterAckMessage = {

@@ -44,7 +44,8 @@ class ClientManager {
     clientId: string,
     clientName: string,
     serverName: string,
-    localServices: ProxyServiceInfo[]
+    localServices: ProxyServiceInfo[],
+    version?: string,
   ): ConnectedClient {
     const key = this.buildClientKey(serverName, clientId);
     
@@ -65,12 +66,16 @@ class ClientManager {
       connectedAt: existingClient?.connectedAt ?? new Date(),
       lastHeartbeat: new Date(),
       socket,
+      version: version?.trim() || undefined,
     };
 
     this.clients.set(key, client);
     this.notifyClientUpdate(serverName);
 
-    console.log(`[WebSocket] Client registered: ${clientName} (${clientId}) for server ${serverName}`);
+    console.log(
+      `[WebSocket] Client registered: ${clientName} (${clientId}) for server ${serverName}` +
+        (version?.trim() ? ` v${version.trim()}` : " (sem versão)"),
+    );
 
     return client;
   }
@@ -180,6 +185,7 @@ class ClientManager {
       connectedAt: client.connectedAt.toISOString(),
       lastHeartbeat: client.lastHeartbeat.toISOString(),
       status: isOnline ? "online" : "offline",
+      version: client.version,
     };
   }
 

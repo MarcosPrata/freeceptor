@@ -29,10 +29,32 @@ export type LiveStream = {
   overrodeApiProxy?: boolean;
   fakeEventsEnabled?: boolean;
   fakeEventsIntervalMs?: number;
+  clientIp?: string;
+  clientGeo?: string;
 };
 
 export function isHeartbeatFrame(frame: LiveStreamFrame): boolean {
   return frame.event === "heartbeat" || frame.data === "heartbeat";
+}
+
+export function formatCallerLabel(ip?: string, geo?: string): string | null {
+  if (!ip && !geo) return null;
+  if (!ip || ip === "unknown") return geo?.trim() || null;
+  return geo?.trim() ? `${ip} · ${geo}` : ip;
+}
+
+/** Fallback for streams opened before clientIp was stored: read the request log headers. */
+export function ipFromRequestHeaders(headers?: Record<string, string>): string | undefined {
+  if (!headers) return undefined;
+  const raw =
+    headers["cf-connecting-ip"] ??
+    headers["true-client-ip"] ??
+    headers["x-real-ip"] ??
+    headers["x-forwarded-for"];
+  if (!raw) return undefined;
+  const first = raw.split(",")[0]?.trim() ?? "";
+  if (!first) return undefined;
+  return first.startsWith("::ffff:") ? first.slice(7) : first;
 }
 
 export function formatStreamDuration(openedAt: string, closedAt?: string, now = Date.now()): string {
@@ -154,6 +176,7 @@ export function LiveStreamFeed({
   const [busy, setBusy] = useState(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const live = !stream.closedAt;
+  const caller = formatCallerLabel(stream.clientIp, stream.clientGeo);
   const intervalMs = stream.fakeEventsIntervalMs ?? 5_000;
   const intervalOptions = useMemo(() => {
     if (FAKE_INTERVALS_MS.includes(intervalMs)) return FAKE_INTERVALS_MS;
@@ -205,6 +228,7 @@ export function LiveStreamFeed({
             {formatStreamDuration(stream.openedAt, stream.closedAt, now)}
             {" · "}
             {stream.frameCount} evento{stream.frameCount === 1 ? "" : "s"}
+            {caller ? ` · ${caller}` : ""}
           </span>
         </span>
         <label className="inline-flex cursor-pointer items-center gap-1.5 text-zinc-500 hover:text-zinc-300">

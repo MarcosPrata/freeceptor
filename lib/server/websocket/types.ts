@@ -14,6 +14,7 @@ export type ConnectedClient = {
   connectedAt: Date;
   lastHeartbeat: Date;
   socket: WebSocket;
+  version?: string;
 };
 
 export type ClientInfo = {
@@ -25,6 +26,7 @@ export type ClientInfo = {
   lastHeartbeat: string;
   status: "online" | "offline";
   requiresEditPassword?: boolean;
+  version?: string;
 };
 
 export type WebSocketMessage =
@@ -50,6 +52,7 @@ export type RegisterMessage = {
   password?: string;
   clientPassword?: string;
   localServices: ProxyServiceInfo[];
+  version?: string;
 };
 
 export type RegisterAckMessage = {

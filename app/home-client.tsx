@@ -44,6 +44,8 @@ import {
   LiveStatusPill,
   StreamSourcePill,
   formatStreamDuration,
+  formatCallerLabel,
+  ipFromRequestHeaders,
   type LiveStream,
 } from "@/components/LiveStreamFeed";
 import {
@@ -82,6 +84,8 @@ type ApiRequestLog = {
   responseStatus: number;
   responseBody: unknown;
   responseHeaders: Record<string, string>;
+  clientIp?: string;
+  clientGeo?: string;
 };
 
 type ApiRouteStat = {
@@ -256,6 +260,7 @@ type ProxyClientInfo = {
   connectedAt: string;
   lastHeartbeat: string;
   status: "online" | "offline";
+  version?: string;
 };
 
 type ProxyModeType = "disabled" | "url" | "client";
@@ -4725,16 +4730,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
               type="button"
               onClick={openApiConfig}
               title="Configurar API"
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
-                apiClientProxyInactive
-                  ? "border border-zinc-300 bg-zinc-200 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400"
-                  : apiHasClientProxy
-                    ? "bg-blue-600 text-white dark:bg-blue-500 dark:text-zinc-950"
-                    : apiHasUrlProxy
-                      ? "bg-violet-600 text-white dark:bg-violet-500 dark:text-zinc-950"
-                      : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-              )}
+              className="inline-flex items-center gap-1.5 rounded-full border border-zinc-300 bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-600 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
             >
               Configurar API
               {apiHasProxy ? (
@@ -4744,8 +4740,8 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                     apiClientProxyInactive
                       ? "bg-zinc-400"
                       : apiHasClientProxy
-                        ? "bg-white dark:bg-zinc-950"
-                        : "bg-white dark:bg-zinc-950",
+                        ? "bg-blue-500"
+                        : "bg-violet-500",
                   )}
                 />
               ) : null}
@@ -4977,7 +4973,13 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                           : " · SSE / streams HTTP. Expandir para ver os frames."}
                       </span>
                     </button>
-                    {!liveSectionCollapsed && openLiveStreams.map((stream) => (
+                    {!liveSectionCollapsed && openLiveStreams.map((stream) => {
+                      const linkedLog = logs.find((log) => log.id === stream.logId);
+                      const caller =
+                        formatCallerLabel(stream.clientIp, stream.clientGeo) ??
+                        formatCallerLabel(linkedLog?.clientIp, linkedLog?.clientGeo) ??
+                        formatCallerLabel(ipFromRequestHeaders(linkedLog?.headers));
+                      return (
                       <div
                         key={stream.requestId}
                         className="rounded-md border border-cyan-300 bg-white shadow-sm dark:border-cyan-900/70 dark:bg-zinc-950"
@@ -5006,6 +5008,7 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                             />
                             <span className="font-sans text-[10px] text-zinc-500">
                               {formatStreamDuration(stream.openedAt)} · {stream.frameCount} evt
+                              {caller ? ` · ${caller}` : ""}
                             </span>
                           </span>
                           <LiveStatusPill live />
@@ -5016,7 +5019,8 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                           </div>
                         )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
                 {listLogs.map((log) => (
@@ -5084,17 +5088,27 @@ export function HomeClient({ initialSession }: { initialSession: InitialSession 
                                 : mode === "url"
                                   ? "Proxy URL (da API)"
                                   : "Mock (comportamento padrão)";
+                          const caller =
+                            formatCallerLabel(log.clientIp, log.clientGeo) ??
+                            formatCallerLabel(ipFromRequestHeaders(log.headers));
                           return (
-                            <span
-                              className={responseModeBadgeClass(
-                                mode,
-                                isOverride ? "filled" : "outline",
-                                clientOffline,
-                              )}
-                              title={title}
-                            >
-                              {clientOffline ? "client · offline" : mode}
-                            </span>
+                            <>
+                              <span
+                                className={responseModeBadgeClass(
+                                  mode,
+                                  isOverride ? "filled" : "outline",
+                                  clientOffline,
+                                )}
+                                title={title}
+                              >
+                                {clientOffline ? "client · offline" : mode}
+                              </span>
+                              {caller ? (
+                                <span className="font-sans text-[10px] text-zinc-500">
+                                  {caller}
+                                </span>
+                              ) : null}
+                            </>
                           );
                         })()}
                       </span>

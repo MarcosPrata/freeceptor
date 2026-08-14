@@ -24,6 +24,8 @@ export type ApiRequestLog = {
   responseStatus: number;
   responseBody: unknown;
   responseHeaders: Record<string, string>;
+  clientIp?: string;
+  clientGeo?: string;
 };
 
 export type ApiRouteStat = {
@@ -477,6 +479,8 @@ export async function getRequestLogs(
           responseStatus: 1,
           responseBody: 1,
           responseHeaders: 1,
+          clientIp: 1,
+          clientGeo: 1,
         },
       },
     )
@@ -511,6 +515,8 @@ export async function getRequestLogs(
       responseStatus: doc.responseStatus ?? 200,
       responseBody: doc.responseBody ?? null,
       responseHeaders: doc.responseHeaders ?? {},
+      clientIp: doc.clientIp,
+      clientGeo: doc.clientGeo,
     };
   });
 }
