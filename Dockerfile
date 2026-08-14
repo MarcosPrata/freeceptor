@@ -2,8 +2,13 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
+# QEMU amd64 no Mac corta o registry a meio do Next; retries evitam o ECONNRESET.
+ENV npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_mintimeout=20000 \
+    npm_config_fetch_retry_maxtimeout=120000
+
 COPY package.json package-lock.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 RUN npm run build
@@ -15,10 +20,13 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
 ENV PORT=8001
+ENV npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_mintimeout=20000 \
+    npm_config_fetch_retry_maxtimeout=120000
 
 # Instala dependências de produção (tsx está em dependencies)
 COPY package.json package-lock.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 
 # Build do Next.js
 COPY --from=builder /app/.next ./.next
